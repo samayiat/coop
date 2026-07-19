@@ -1041,10 +1041,13 @@ function coopMyId(){ try{ return (Playroom.myPlayer()&&Playroom.myPlayer().id)||
 
 const ENT_FIELDS=['id','k','x','z','y','face','state','st','anim','dead','hp','maxhp','w','d','h',
   'skin','elite','big','fire','dmg','flash','hitAnimT','recoil','recoilT','tok','hitstun','enter','plasmaCd'];
-function coopBroadcastEnts(){ try{ Playroom.setState('ents', ents.map(e=>{ const o={}; for(const f of ENT_FIELDS) o[f]=e[f]; return o; })); }catch(e){} }
+// Broadcast as an OBJECT keyed by enemy id, not an array — PlayroomKit room state syncs
+// plain objects reliably (same as cansDead/dropsGone) but drops/mangles arrays, which is
+// why the guest was receiving no enemies.
+function coopBroadcastEnts(){ try{ const o={}; for(const e of ents){ const s={}; for(const f of ENT_FIELDS) s[f]=e[f]; o[e.id]=s; } Playroom.setState('ents', o); }catch(e){} }
 function coopMirrorEnts(){                       // guest: replace local enemies with the host's snapshot
   try{ const snap=Playroom.getState('ents'); ents.length=0;
-    if(snap) for(const s of snap) ents.push(Object.assign({vx:0,vy:0,cd:0,enterZ:s.z,recoil:0,recoilT:0}, s));
+    if(snap) for(const k in snap){ const s=snap[k]; if(s) ents.push(Object.assign({vx:0,vy:0,cd:0,enterZ:s.z,recoil:0,recoilT:0}, s)); }
   }catch(e){ ents.length=0; }
 }
 let _hitSeq=0; const _hitsApplied=new Set();
@@ -3582,7 +3585,8 @@ function hud(){
   if(MP){ ctx.save(); ctx.textAlign='right'; ctx.font='bold 8px "JetBrains Mono",monospace';
     const live = typeof Playroom!=="undefined" && Playroom.myPlayer();
     ctx.fillStyle = live ? '#3ad1ff' : '#ff2e88';
-    ctx.fillText('CO-OP'+(live?' · '+(others.length+1)+'P':' · connecting…'), W-10, 14);
+    const nAlive = ents.filter(e=>!e.dead).length;
+    ctx.fillText('CO-OP'+(live?' · '+(others.length+1)+'P '+(coopHost()?'H':'G')+' · E'+nAlive:' · connecting…'), W-10, 14);
     if(!P.downed && coopDownedTeammate()){ ctx.textAlign='center'; ctx.font='bold 9px "JetBrains Mono",monospace';
       ctx.fillStyle = P.money>=500 ? '#3ad1ff' : '#ff2e88';
       ctx.fillText(P.money>=500 ? 'TALK: REVIVE TEAMMATE  ($500)' : 'TEAMMATE DOWN — NEED $500', W/2, 24); }
