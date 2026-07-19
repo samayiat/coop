@@ -90,7 +90,7 @@ const driver = `
    spawn:(e)=>ents.push(e), clearEnts:()=>{ ents.length=0; },
    setCamLock:(v)=>{ camLock=v; camX=v; }, setBest:(v)=>{ best=v; }, setLives:(v)=>{ lives=v; },
    releaseArena:()=>{ ents.length=0; camLock=null; boss=null; bossDone=0; hitstop=0; dateOn=false; date=null; fires.length=0; },
-   rat,vamp,connect,hurtPlayer,setShop,buy,spawnWave,tier,stream,update,render,talkLen,resolveTalk,aggro,mkNpc,
+   rat,vamp,connect,hurtPlayer,setShop,buy,spawnWave,tier,stream,update,render,talkLen,resolveTalk,aggro,mkNpc,coopApply,
    tryGrab,grabbable,atCurb,splatInTraffic,dropGrab,launchGrabbed,tossPlayerToStreet,
    throwWeapon,drop, get WEAPONS(){return WEAPONS},
    genBoss,spawnBoss,updateBoss,killBoss,enrageBoss,hits,atkBox,startDate,resolveDate,
@@ -646,7 +646,7 @@ if(!err){
     // and assert nothing hostile spawned — gates, waves, the 250m boss, crowd aggro and
     // trash-rats must all stay suppressed. Enemies here = the session isn't really in MP.
     const g=__G();
-    global.Playroom={ myPlayer:()=>({ id:'me', setState:()=>{}, getState:()=>null }) };
+    global.Playroom={ myPlayer:()=>({ id:'me', setState:()=>{}, getState:()=>null }), getState:()=>null, setState:()=>{} };
     __others().length=0; __setMP(true); g.clearEnts();
     __key('KeyD',true); for(let i=0;i<4000;i++){ __tick(1); } __key('KeyD',false);
     g.spawnBoss(3);                       // the date "her man" + dev gauntlet path must also no-op in MP
@@ -665,6 +665,24 @@ if(!err){
     if(a.scammer!==b.scammer || a.trueTier!==b.trueTier) throw new Error('mkNpc tier/scammer not deterministic');
     const seen=new Set(); for(let x=200;x<6000;x+=520) seen.add(g.mkNpc(x,306).who);
     if(seen.size<2) throw new Error('mkNpc gives the same woman at every door — not seeded by position');
+  });
+  scene('co-op: cans + drops sync, and cash pays both players', ()=>{
+    const g=__G();
+    const store={cansDead:{}, dropsGone:{}};
+    global.Playroom={ myPlayer:()=>({id:'me'}), getState:k=>store[k], setState:(k,v)=>{store[k]=v;} };
+    __setMP(true);
+    g.clearEnts(); g.cans.length=0; g.drops.length=0;
+    g.cans.push({id:'ctest', x:g.P.x+300, z:306, type:'can', hp:2, dead:false});
+    // a teammate smashed the can → this client must mark it dead and spawn the (tagged) loot
+    store.cansDead={ctest:1}; g.coopApply();
+    if(!g.cans[0].dead) throw new Error('synced can not marked dead');
+    if(!g.drops.length || g.drops[0].nid==null) throw new Error('synced can spawned no id-tagged loot');
+    // a teammate then picked up a cash drop worth 20 → the drop vanishes for us AND we get paid 20
+    const nid=g.drops[0].nid, before=g.P.money;
+    store.dropsGone={[nid]:{by:'other', m:20}}; g.coopApply();
+    if(g.P.money!==before+20) throw new Error('teammate cash not credited: money '+g.P.money+' expected '+(before+20));
+    if(!g.drops[0].gone) throw new Error('picked-up drop not removed for teammate');
+    __setMP(false); delete global.Playroom;
   });
   const g2=__G();
   console.log('\nend state: x='+Math.round(g2.P.x)+'  block '+(g2.tier()+1)+

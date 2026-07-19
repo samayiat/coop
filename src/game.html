@@ -718,7 +718,7 @@ function genChunk(ci){
   for(let i=0;i<3;i++) GRATES.push({x:x0+R()*CHUNK, z:FLOOR_N+32+R()*(FLOOR_S-FLOOR_N-44), open:0, chunk:ci});
   // a few breakables, mixed — not a wall of trash cans
   for(let i=0;i<3;i++){ const ty=['can','box','crate','dumpster'][Math.floor(R()*4)];
-    cans.push({x:x0+40+R()*(CHUNK-80), z:FLOOR_N+8+R()*(FLOOR_S-FLOOR_N-16), type:ty,
+    cans.push({id:'c'+ci+'_'+i, x:x0+40+R()*(CHUNK-80), z:FLOOR_N+8+R()*(FLOOR_S-FLOOR_N-16), type:ty,
       hp: ty==='box'?1:ty==='dumpster'?3:2, w: ty==='dumpster'?18:11, shake:0, dead:false, chunk:ci}); }
   // street furniture against the storefronts — trees (procedural), hydrants, benches, mailboxes, signs, crates.
   // (gate + lamp dropped — gate sprite has baked-in graffiti; lamps not wanted)
@@ -774,6 +774,7 @@ function reset(){
   lives=3; continues=0; night={bosses:0,women:0,cash:0,reach:0,traffic:0}; dawnShown=false;   // fresh night
   cans=[]; npcs=[]; crowd=[]; cars=[]; litter=[]; steam=[]; props=[];
   BUILDINGS=[]; CLUBS=[]; GRATES=[]; GATES=[]; MADE.clear();
+  _credited.clear();
   best=Math.max(best||0, 0);
   stream();
 }
@@ -961,6 +962,52 @@ function emitFire(e){
 
 function drop(x,z,kind,wtype){ drops.push({x,z,y:26,vy:rnd(1.4,2.6),vx:rnd(-.8,.8),kind,wtype,life:kind==='bottle'?280:900,land:0}); }
 function tooth(x,z){ drops.push({x,z,y:44,vy:rnd(2.8,4.2),vx:rnd(-2.2,2.2),vz:rnd(-.6,.6),kind:'tooth',life:900,land:0}); }
+
+// ---- co-op world sync ----------------------------------------------------
+// Cans and their drops are SHARED; women are NOT (both players may work the same door).
+// Generation is deterministic, so a can's loot is a pure function of the can — every client
+// spawns the identical drop when that can dies. So we only sync two small maps in room
+// state: which cans are dead, and which drops were taken (with the cash amount, so picked-up
+// MONEY pays BOTH players separately — nobody can hog it). All wrapped so a networking
+// hiccup can never throw into update()/render().
+const _credited=new Set();          // dropsGone ids whose money this client already banked
+function coopPush(key,id,val){
+  if(!MP || typeof Playroom==="undefined") return;
+  try{ const m=Playroom.getState(key)||{}; if(val===undefined && m[id]!==undefined) return;
+       m[id]=(val===undefined?1:val); Playroom.setState(key,m,true); }catch(e){}
+}
+function dropN(c,suffix,kind,wtype){                 // spawn a drop tagged with a stable shared id
+  drop(c.x+(suffix?rnd(-10,10):0), c.z, kind, wtype);
+  drops[drops.length-1].nid = c.id+suffix;
+}
+function canLoot(c){                                  // deterministic per can → same drop on every client
+  let s=0; const R=()=>hsh(c.x*0.53 + c.z*0.19 + (s++)*2.7 + 3.1);
+  const r=R(), trash=c.type==='can'||c.type==='dumpster';
+  if(r<0.34 && trash && !MP){ for(let i=0;i<(c.type==='dumpster'?4:3);i++) ents.push(rat(c.x+rnd(-10,10),c.z)); say(c.x,c.z,'RATS','#7d7791'); }
+  else if(WEAPONS_ON && r<0.60){ const wt=trash?'bottle':'pipe'; dropN(c,'','weapon',wt); say(c.x,c.z,WEAPONS[wt].name+'!','#ffb545'); }
+  else if(r<0.88) dropN(c,'','cash'); else dropN(c,'','jameson');
+  if(c.type==='dumpster') dropN(c,'b','cash');
+}
+function killCan(c,broadcast){                        // smash a can: mark dead + spawn its shared loot, once
+  if(c.dead) return;
+  c.dead=true; puff(c.x,c.z,20,c.type==='dumpster'?16:10,'#6b6478');
+  if(!c.looted){ c.looted=true; canLoot(c); }
+  if(broadcast) coopPush('cansDead', c.id);
+}
+function coopApply(){                                 // pull shared can/drop deltas onto the local world
+  if(!MP || typeof Playroom==="undefined") return;
+  try{
+    const dead=Playroom.getState('cansDead');
+    if(dead) for(const c of cans) if(!c.dead && dead[c.id]) killCan(c,false);   // a teammate smashed it
+    const gone=Playroom.getState('dropsGone');
+    if(gone){
+      for(const d of drops) if(d.nid!=null && gone[d.nid]) d.gone=true;         // taken → remove for everyone
+      const my=(Playroom.myPlayer()&&Playroom.myPlayer().id)||'';
+      for(const id in gone){ const g=gone[id];
+        if(g && g.m>0 && g.by!==my && !_credited.has(id)){ _credited.add(id); P.money+=g.m; night.cash+=g.m; } }  // money pays both, separately
+    }
+  }catch(e){ if(!coopApply._w){ console.error('coop sync:', e.message||e); coopApply._w=true; } }
+}
 function puff(x,z,y,n,col){ for(let i=0;i<n;i++) parts.push({x,z,y,vx:rnd(-2,2),vy:rnd(-.4,2.6),vz:rnd(-.7,.7),life:rnd(14,30),col}); }
 function say(x,z,txt,col){ floats.push({x,z,y:78,txt,col:col||'#fff',life:60}); }
 
@@ -1862,6 +1909,7 @@ function ambient(){
 //====================== update ======================
 function update(){
   t++;
+  if(MP) coopApply();          // pull shared can/drop deltas from teammates before simulating
   for(const b of BUILDINGS) if(b.open>0)b.open--;
   for(const g of GRATES) if(g.open>0)g.open--;
   if(hitstop>0){ hitstop--; return; }
@@ -2176,12 +2224,7 @@ function update(){
   if(P.state==='punch' && P.st===cStep().su+1){ const b=atkBox();
     for(const c of cans){ if(c.dead)continue;
       if(Math.abs(b.x-c.x)<(c.w||11)+18&&Math.abs(b.z-c.z)<20){ c.hp--; c.shake=6; shake=2; blip(140,.05);
-        if(c.hp<=0){ c.dead=true; puff(c.x,c.z,20,c.type==='dumpster'?16:10,'#6b6478'); const r=Math.random();
-          const trash = c.type==='can'||c.type==='dumpster';        // rats nest in the trash, not the crates
-          if(r<0.34 && trash && !MP){ for(let i=0;i<(c.type==='dumpster'?4:3);i++) ents.push(rat(c.x+rnd(-10,10),c.z)); say(c.x,c.z,'RATS','#7d7791'); }   // no rats in co-op — falls through to loot
-          else if(WEAPONS_ON && r<0.60){ const wt = trash?'bottle':'pipe'; drop(c.x,c.z,'weapon',wt); say(c.x,c.z,WEAPONS[wt].name+'!','#ffb545'); }   // ~26% a street weapon (parked — see WEAPONS_ON)
-          else if(r<0.88) drop(c.x,c.z,'cash'); else drop(c.x,c.z,'jameson');   // mostly cash — bottles are rarer now
-          if(c.type==='dumpster') drop(c.x+rnd(-10,10),c.z,'cash'); } } } }   // dumpsters pay out extra
+        if(c.hp<=0) killCan(c,true); } } }   // dead + its (deterministic, shared) loot, broadcast to co-op
   for(const c of cans) if(c.shake>0)c.shake--;
 
   //---- drops
@@ -2189,13 +2232,14 @@ function update(){
     if(!d.land){ d.y+=d.vy; d.vy-=0.3; d.x+=d.vx; if(d.vz)d.z+=d.vz;
       if(d.y<=0){ d.y=0; if(d.kind==='tooth'&&Math.abs(d.vy)>1.4){d.vy*=-0.42;d.vx*=0.6;} else {d.land=1;d.vy=0;} } }
     if(--d.life<0) d.gone=true;
-    if(Math.abs(d.x-P.x)<20&&Math.abs(d.z-P.z)<14&&P.y<20 && !(d.kind==='weapon'&&P.weapon)){ d.gone=true;   // already holding one → leave it on the ground
-      if(d.kind==='cash'){ const m=Math.round(Math.floor(rnd(5,18))*(1+U.pockets*0.15)); P.money+=m; night.cash+=m; say(d.x,d.z,'+$'+m,'#c9d13a'); }   // POCKETS: you pocket more
-      if(d.kind==='tooth'){ const m=5+U.pockets; P.money+=m; night.cash+=m; say(d.x,d.z,'+$'+m,'#e8e2d4'); }
+    if(Math.abs(d.x-P.x)<20&&Math.abs(d.z-P.z)<14&&P.y<20 && !(d.kind==='weapon'&&P.weapon)){ d.gone=true; let got=0;   // already holding one → leave it on the ground
+      if(d.kind==='cash'){ got=Math.round(Math.floor(rnd(5,18))*(1+U.pockets*0.15)); P.money+=got; night.cash+=got; say(d.x,d.z,'+$'+got,'#c9d13a'); }   // POCKETS: you pocket more
+      if(d.kind==='tooth'){ got=5+U.pockets; P.money+=got; night.cash+=got; say(d.x,d.z,'+$'+got,'#e8e2d4'); }
       if(d.kind==='jameson'||d.kind==='bottle'){ P.bottles++; say(d.x,d.z,'+1 BOTTLE','#c9d13a'); }
       if(d.kind==='burger'){ const heal=Math.round(P.maxhp*0.35); P.hp=Math.min(P.maxhp,P.hp+heal); say(d.x,d.z,'+'+heal+' HP','#ffb545'); blip(600,.05); }
       if(d.kind==='weapon'){ const w=WEAPONS[d.wtype]; P.weapon={type:d.wtype,dur:w.dur}; say(d.x,d.z-8,'PICKED UP '+w.name,'#ffb545'); blip(300,.06);
         if(!armedTip){ armedTip=true; say(P.x,P.z-30,'HOLD PUNCH TO THROW','#c9d13a'); } }
+      if(MP && d.nid!=null){ _credited.add(d.nid); coopPush('dropsGone', d.nid, {by:(typeof Playroom!=="undefined"&&Playroom.myPlayer()&&Playroom.myPlayer().id)||'', m:got}); }   // gone for everyone; the cash pays your teammate too
       blip(520,.04); } }
   drops=drops.filter(d=>!d.gone);
 
@@ -3817,6 +3861,7 @@ async function startCoop(){
   try {
     await Playroom.insertCoin({ matchmaking:true, maxPlayersPerRoom:4 });   // the handshake, before any game exists
     WSEED = seedFromRoom();          // P1's room decides the world — same code on every client
+    try{ if(Playroom.isHost && Playroom.isHost()){ Playroom.setState('cansDead',{},true); Playroom.setState('dropsGone',{},true); } }catch(e){}   // host wipes any stale world deltas
     Playroom.onPlayerJoin((state) => {
       if(state.id===Playroom.myPlayer().id) return;                         // skip self
       others.push(state);
