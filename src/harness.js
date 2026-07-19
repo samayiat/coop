@@ -641,18 +641,19 @@ if(!err){
     __setMP(false); __others().length=0; delete global.Playroom;
     if(threw) throw new Error('render threw with a remote present: '+threw.message);
   });
-  scene('co-op: no enemies spawn over 4000 ticks of walking', ()=>{
-    // co-op is meant to be enemy-free (dev focus on player sync). Walk a long way in MP
-    // and assert nothing hostile spawned — gates, waves, the 250m boss, crowd aggro and
-    // trash-rats must all stay suppressed. Enemies here = the session isn't really in MP.
+  scene('co-op guest: mirrors the host, no local spawns, no bosses', ()=>{
+    // Enemies are host-authoritative. The GUEST must not spawn or simulate its own — it
+    // mirrors the host snapshot (empty here). Walk a long way as guest and assert ents
+    // stays empty, and that bosses never spawn in co-op.
     const g=__G();
-    global.Playroom={ myPlayer:()=>({ id:'me', setState:()=>{}, getState:()=>null }), getState:()=>null, setState:()=>{} };
+    global.Playroom={ myPlayer:()=>({ id:'me', setState:()=>{}, getState:()=>null }),
+      getState:()=>null, setState:()=>{}, isHost:()=>false };   // this client is the GUEST
     __others().length=0; __setMP(true); g.clearEnts();
-    __key('KeyD',true); for(let i=0;i<4000;i++){ __tick(1); } __key('KeyD',false);
-    g.spawnBoss(3);                       // the date "her man" + dev gauntlet path must also no-op in MP
+    __key('KeyD',true); for(let i=0;i<2000;i++){ __tick(1); } __key('KeyD',false);
+    g.spawnBoss(3);                       // bosses stay off in co-op regardless of host/guest
     const spawned=g.ents.length, gotBoss=!!g.boss;
     __setMP(false); delete global.Playroom; g.clearEnts();
-    if(spawned) throw new Error(spawned+' entities spawned in co-op (expected 0)');
+    if(spawned) throw new Error(spawned+' local enemies on the guest (should mirror host)');
     if(gotBoss) throw new Error('a boss spawned in co-op');
   });
   scene('co-op: women are deterministic (same door → same woman + crew)', ()=>{

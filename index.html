@@ -765,7 +765,7 @@ function reset(){
   Object.assign(P,{x:120,z:300,y:0,vy:0,face:1,hp:100,maxhp:100,drunk:0,conf:0,money:500,
     state:'idle',st:0,step:0,buf:0,connected:false,hitDone:false,driftPh:0,iframes:0,
     dmgMul:1,dmgT:0,fireT:0,scammedBy:null,lean:0,stumble:0,stumbleV:0,hitFlash:0,airT:0,deaths:0,
-    bottles:2,stepV:0,talkT:0,talkN:null,downT:0,knockV:0,builtT:0,weapon:null,grabE:null,grabbedBy:null,inStreet:false});
+    bottles:2,stepV:0,talkT:0,talkN:null,downT:0,knockV:0,builtT:0,weapon:null,grabE:null,grabbedBy:null,inStreet:false,downed:false});
   U={liver:0,hands:0,body:0,chin:0,rep:0,game:0,eyes:0,boots:0,reach:0,knuck:0,hide:0,iron:0,pockets:0}; burgerCost=25;
   P.maxhp=100; P.conf=0;
 
@@ -901,7 +901,7 @@ const cLen =s=>s.su+s.act+s.rec;
 function rat(x,z,fromGrate,o){
   o=o||{};
   const big=!!o.big, fire=!!o.fire;
-  return {k:'rat',x,z,y:0,vy:0,vx:0, big, fire,
+  return {id:entId(),k:'rat',x,z,y:0,vy:0,vx:0, big, fire,
     hp: big?140:(fire?12:8), maxhp: big?140:(fire?12:8),
     w: big?28:16, d: big?15:8, h: big?44:14,
     spd: big?0.92:(fire?1.15:1.4), dmg: big?16:(fire?5:4),
@@ -915,7 +915,7 @@ function vamp(x,z,fromDoor,forceElite,skin){
   // a separate, independent roll — some Darnells are just bigger. stacks with elite/dark.
   const big = skin==='darnell' && Math.random()<0.18;
   const bigM = big?1.5:1;
-  return {k:'vamp',x,z,y:0,vy:0,vx:0, elite:E, skin, big,
+  return {id:entId(),k:'vamp',x,z,y:0,vy:0,vx:0, elite:E, skin, big,
   hp:Math.round((E?76:38)*(big?1.6:1)), maxhp:Math.round((E?76:38)*(big?1.6:1)),
   dmg:Math.round((E?18:9)*(big?1.3:1)), spd:E?0.58:0.64, sc:(E?1.16:1)*bigM,
   flash:0,face:-1,w:Math.round((E?30:26)*bigM),d:Math.round((E?12:10)*bigM),h:74*bigM,
@@ -930,7 +930,7 @@ function sammich(x,z){ return {k:'sammich',x,z,y:0,vy:0,vx:0,
 
 // a bystander becomes a real enemy: lit, health bar, walks at you. that's the readable difference.
 function aggro(cw,punched){
-  if(MP) return;              // co-op is enemy-free right now (dev: focus on player sync)
+  if(coopGuest()) return;     // host spawns; the guest mirrors the host's enemies
   if(cw.gone) return;
   cw.gone=true;
   const e=vamp(cw.x,cw.z,false); ents.push(e);
@@ -983,7 +983,7 @@ function dropN(c,suffix,kind,wtype){                 // spawn a drop tagged with
 function canLoot(c){                                  // deterministic per can → same drop on every client
   let s=0; const R=()=>hsh(c.x*0.53 + c.z*0.19 + (s++)*2.7 + 3.1);
   const r=R(), trash=c.type==='can'||c.type==='dumpster';
-  if(r<0.34 && trash && !MP){ for(let i=0;i<(c.type==='dumpster'?4:3);i++) ents.push(rat(c.x+rnd(-10,10),c.z)); say(c.x,c.z,'RATS','#7d7791'); }
+  if(r<0.34 && trash && !coopGuest()){ for(let i=0;i<(c.type==='dumpster'?4:3);i++) ents.push(rat(c.x+rnd(-10,10),c.z)); say(c.x,c.z,'RATS','#7d7791'); }
   else if(WEAPONS_ON && r<0.60){ const wt=trash?'bottle':'pipe'; dropN(c,'','weapon',wt); say(c.x,c.z,WEAPONS[wt].name+'!','#ffb545'); }
   else if(r<0.88) dropN(c,'','cash'); else dropN(c,'','jameson');
   if(c.type==='dumpster') dropN(c,'b','cash');
@@ -1008,11 +1008,78 @@ function coopApply(){                                 // pull shared can/drop de
     }
   }catch(e){ if(!coopApply._w){ console.error('coop sync:', e.message||e); coopApply._w=true; } }
 }
+
+// ---- co-op enemies (host-authoritative) & revive -------------------------
+// The HOST (P1) simulates every enemy and broadcasts a snapshot; the GUEST doesn't spawn
+// or run AI — it mirrors the snapshot (render + its own collision) and reports its melee
+// hits back to the host, which applies them. Enemy->player damage is resolved locally by
+// each client against the shared attack state (proximity to whoever the enemy is on).
+// Bosses stay off in co-op for now. All wrapped so a hiccup can't throw into update().
+let _entSeq=0;
+function entId(){ return 'e'+(_entSeq++); }
+function coopHost(){ return !MP || typeof Playroom==="undefined" || !Playroom.isHost || Playroom.isHost(); }
+function coopGuest(){ return MP && !coopHost(); }
+function coopMyId(){ try{ return (Playroom.myPlayer()&&Playroom.myPlayer().id)||''; }catch(e){ return ''; } }
+
+const ENT_FIELDS=['id','k','x','z','y','face','state','st','anim','dead','hp','maxhp','w','d','h',
+  'skin','elite','big','fire','dmg','flash','hitAnimT','recoil','recoilT','tok','hitstun','enter','plasmaCd'];
+function coopBroadcastEnts(){ try{ Playroom.setState('ents', ents.map(e=>{ const o={}; for(const f of ENT_FIELDS) o[f]=e[f]; return o; })); }catch(e){} }
+function coopMirrorEnts(){                       // guest: replace local enemies with the host's snapshot
+  try{ const snap=Playroom.getState('ents'); ents.length=0;
+    if(snap) for(const s of snap) ents.push(Object.assign({vx:0,vy:0,cd:0,enterZ:s.z,recoil:0,recoilT:0}, s));
+  }catch(e){ ents.length=0; }
+}
+let _hitSeq=0; const _hitsApplied=new Set();
+function coopReportHit(id,dmg,kx,launch){        // guest -> host: "I hit enemy `id` for `dmg`"
+  try{ const m=Playroom.getState('hits')||{}; m[coopMyId()+'_'+(_hitSeq++)]={id,dmg,kx,launch};
+    Playroom.setState('hits',m,true); }catch(e){}
+}
+function coopApplyHits(){                         // host: apply teammates' reported melee to the real enemies
+  try{ const m=Playroom.getState('hits'); if(!m) return;
+    for(const k in m){ if(_hitsApplied.has(k)) continue; _hitsApplied.add(k); const h=m[k];
+      const e=ents.find(x=>x.id===h.id && !x.dead); if(!e) continue;
+      e.hp-=h.dmg; e.flash=8; e.tok=false; e.hitstun=10; e.state='stun';
+      if(h.launch){ e.state='launch'; e.vx=(h.kx||1)*6; e.vy=2; }
+      if(e.hp<=0 && !e.dead){ e.dead=1; e.vx=(h.kx||1)*3; P.conf=Math.min(100,P.conf+2); }
+    } }catch(e){}
+}
+function coopNearestPlayer(e){                    // host AI: chase/attack whichever teammate is closest (skip downed)
+  let bx=P.x,bz=P.z,bd=Math.hypot(P.x-e.x,(P.z-e.z)*1.6),host=true;
+  if(MP && typeof Playroom!=="undefined"){ try{ for(const o of others){ const p=o.getState&&o.getState('pos');
+    if(!p||p.down) continue; const d=Math.hypot(p.x-e.x,(p.z-e.z)*1.6); if(d<bd){ bd=d;bx=p.x;bz=p.z;host=false; } } }catch(_){}}
+  return {x:bx,z:bz,d:bd,host};
+}
+const _guestHitBy=new Set();
+function coopGuestCombat(){                       // guest: take damage from any mirrored enemy attacking me
+  for(const e of ents){ if(e.dead){ continue; }
+    const active = e.state==='atk' && (e.k==='rat'?(e.big?(e.st>14&&e.st<26):(e.st>10&&e.st<18)):(e.st>16&&e.st<30));
+    if(active && !_guestHitBy.has(e.id)){
+      const rw=e.k==='rat'?(e.big?34:18):34;
+      if(Math.abs(P.x-(e.x+e.face*rw*0.7))<rw && Math.abs(P.z-e.z)<16){ _guestHitBy.add(e.id); hurtPlayer(e.dmg||8,e.x); } }
+    if(!active) _guestHitBy.delete(e.id);
+  }
+}
+// --- downed / revive ---
+let _lastRevive=0;
+function coopTeammateAlive(){ try{ for(const o of others){ const p=o.getState&&o.getState('pos'); if(p&&!p.down) return true; } }catch(_){} return false; }
+function coopDownedTeammate(){ try{ for(const o of others){ const p=o.getState&&o.getState('pos'); if(p&&p.down) return o; } }catch(_){} return null; }
+function coopReviveTeammate(){                    // living player pays 500 to bring a downed teammate back
+  const o=coopDownedTeammate(); if(!o || P.money<500) return false;
+  P.money-=500;
+  try{ const m=Playroom.getState('revive')||{}; m[o.id]=(m[o.id]||0)+1; Playroom.setState('revive',m,true); }catch(_){}
+  say(P.x,P.z-30,'REVIVED TEAMMATE  -$500','#3ad1ff'); blip(680,.08); return true;
+}
+function coopDownedUpdate(){                      // you're on the pavement, frozen, until a teammate pays up
+  try{ const m=Playroom.getState('revive'), my=coopMyId();
+    if(m && m[my] && m[my]>_lastRevive){ _lastRevive=m[my]; P.downed=false; P.hp=P.maxhp; P.drunk=0; lives=1; respawn(); return; }
+  }catch(_){}
+  camX+=((P.x-W*0.42)-camX)*0.09; camX=Math.max(0,camX);
+}
 function puff(x,z,y,n,col){ for(let i=0;i<n;i++) parts.push({x,z,y,vx:rnd(-2,2),vy:rnd(-.4,2.6),vz:rnd(-.7,.7),life:rnd(14,30),col}); }
 function say(x,z,txt,col){ floats.push({x,z,y:78,txt,col:col||'#fff',life:60}); }
 
 function spawnWave(T){
-  if(MP) return;             // no waves in co-op (dev: focus on player sync)
+  if(coopGuest()) return;    // host spawns waves; the guest mirrors them
   const near=CLUBS.filter(b=>Math.abs(b.doorX-P.x)<W*0.9);
   const pick=()=> near.length?near[Math.floor(Math.random()*near.length)]:CLUBS[0];
   const grates=GRATES.filter(g=>Math.abs(g.x-camX-W/2)<W*0.7);
@@ -1539,6 +1606,7 @@ function connect(e,s){
     return crit;
   }
   e.hp-=dmg;
+  if(coopGuest() && e.id!=null && e.k!=='boss') coopReportHit(e.id, dmg, P.face, !!s.launch);   // guest: host owns the real enemy, tell it
   if(e.k==='boss'){                                // bosses don't stun/launch/smash — they chip and stagger
     e.flash=8; hitstop=crit?7:4; shake=Math.max(shake,crit?5:2.4);
     rumble(crit?150:80,.5,.6,true);
@@ -1910,6 +1978,8 @@ function ambient(){
 function update(){
   t++;
   if(MP) coopApply();          // pull shared can/drop deltas from teammates before simulating
+  if(P.downed){ coopDownedUpdate(); return; }                                   // on the pavement — frozen until revived
+  if(MP && P.money>=500 && coopDownedTeammate() && (tap('KeyE')||tapT('D'))) coopReviveTeammate();   // TALK by a downed teammate → pay $500
   for(const b of BUILDINGS) if(b.open>0)b.open--;
   for(const g of GRATES) if(g.open>0)g.open--;
   if(hitstop>0){ hitstop--; return; }
@@ -2114,6 +2184,9 @@ function update(){
   } else { camX+=((P.x-W*0.42)-camX)*0.09; camX=Math.max(0,camX); }
 
   //---- enemies
+  if(coopGuest()){ coopMirrorEnts(); coopGuestCombat(); }   // guest: mirror the host's enemies + take their hits
+  else {
+  if(MP) coopApplyHits();                                    // host: bank teammates' reported melee first
   let toks=ents.filter(e=>!e.dead&&e.tok).length;
   for(const e of ents){
     if(e.dead){ e.dead++; e.x+=e.vx; e.vx*=0.9; continue; }
@@ -2164,7 +2237,7 @@ function update(){
     if(e.enter>0){ e.enter--; continue; }      // rat squeezing out of the grate
     if(e.hitstun>0){ e.hitstun--; if(e.hitstun<=0&&e.state==='stun')e.state='walk'; continue; }
 
-    const dx=P.x-e.x, dz=P.z-e.z, d=Math.hypot(dx,dz*1.6);
+    const _T=coopNearestPlayer(e); const dx=_T.x-e.x, dz=_T.z-e.z, d=Math.hypot(dx,dz*1.6);
     e.face=dx>0?1:-1;
     // dark form: a ranged plasma lob on its own cooldown, independent of the melee state
     // machine — too menacing to just be another haymaker bruiser up close.
@@ -2207,7 +2280,7 @@ function update(){
       if(!e.tok){e.tok=true;toks++;} e.state='breathe'; e.st=0;
     }
     // at the curb they'll GRAB you and try to throw you into the road — mash out or you're the one splatted
-    else if(e.k==='vamp' && !e.fire && P.z>FLOOR_S-30 && d<38 && e.cd<=0 && (e.tok||toks<2)
+    else if(_T.host && e.k==='vamp' && !e.fire && P.z>FLOOR_S-30 && d<38 && e.cd<=0 && (e.tok||toks<2)
             && P.iframes<=0 && (P.grabImmune||0)<=0 && !OPT.inv && (P.state==='idle'||P.state==='walk') && Math.random()<0.4){
       if(!e.tok){e.tok=true;toks++;}
       e.state='grabbing'; e.grabT=0; e.face=dx>0?1:-1;
@@ -2219,6 +2292,8 @@ function update(){
     }
   }
   ents=ents.filter(e=>e.dead<28);
+  if(MP && coopHost()) coopBroadcastEnts();                  // host: publish the enemy snapshot to teammates
+  }
 
   //---- cans
   if(P.state==='punch' && P.st===cStep().su+1){ const b=atkBox();
@@ -2330,12 +2405,14 @@ function update(){
   floats=floats.filter(f=>f.life>0);
   if(shake>0) shake*=0.86;
 
-  if(P.hp<=0){
+  if(P.hp<=0 && !P.downed){
     P.deaths++;
     if(boss && camLock!==null){ bossDeaths++;          // dying to the boss you're currently fighting
       if(bossDeaths>2 && !bossNagged){ bossNagged=true; showNotice('YOU SHOULD TRY NOT TO GET HIT'); } }
     lives--;
     if(lives>0){ respawn(); say(P.x,P.z,lives+(lives>1?' LIVES':' LIFE')+' LEFT','#ff2e88'); }
+    else if(MP && coopTeammateAlive()){ P.downed=true; P.state='down'; P.downT=1e9;   // co-op: go down, wait for a $500 revive
+      say(P.x,P.z-30,'DOWNED — TEAMMATE CAN REVIVE ($500)','#ff2e88'); rumble(340,1,.7,true); }
     else if(P.conf>=99.5) showBuiltDiff();             // bar reads 100 (per-tick bleed already shaved it) → free clutch revive
     else showContinue();                               // out of lives → pay to continue, or call it
   }
@@ -3487,6 +3564,9 @@ function hud(){
     const live = typeof Playroom!=="undefined" && Playroom.myPlayer();
     ctx.fillStyle = live ? '#3ad1ff' : '#ff2e88';
     ctx.fillText('CO-OP'+(live?' · '+(others.length+1)+'P':' · connecting…'), W-10, 14);
+    if(!P.downed && coopDownedTeammate()){ ctx.textAlign='center'; ctx.font='bold 9px "JetBrains Mono",monospace';
+      ctx.fillStyle = P.money>=500 ? '#3ad1ff' : '#ff2e88';
+      ctx.fillText(P.money>=500 ? 'TALK: REVIVE TEAMMATE  ($500)' : 'TEAMMATE DOWN — NEED $500', W/2, 24); }
     ctx.restore(); ctx.textAlign='left'; }
 
   ctx.font='7px "JetBrains Mono",monospace';
@@ -3617,7 +3697,7 @@ function render(){
   if(MP && typeof Playroom !== "undefined" && Playroom.myPlayer()){
     try{
       const me=Playroom.myPlayer();
-      me.setState("pos", {x:P.x, y:P.y, z:P.z, state:P.state, face:P.face});
+      me.setState("pos", {x:P.x, y:P.y, z:P.z, state:P.downed?'down':P.state, face:P.face, down:!!P.downed, hp:P.hp});
       // stable global order: sort all player ids so every client agrees on 1P/2P/3P/4P
       const order=[me.id, ...others.map(o=>o.id)].filter((v,i,a)=>a.indexOf(v)===i).sort();
       myCoopIdx=order.indexOf(me.id);
@@ -3861,7 +3941,7 @@ async function startCoop(){
   try {
     await Playroom.insertCoin({ matchmaking:true, maxPlayersPerRoom:4 });   // the handshake, before any game exists
     WSEED = seedFromRoom();          // P1's room decides the world — same code on every client
-    try{ if(Playroom.isHost && Playroom.isHost()){ Playroom.setState('cansDead',{},true); Playroom.setState('dropsGone',{},true); } }catch(e){}   // host wipes any stale world deltas
+    try{ if(Playroom.isHost && Playroom.isHost()){ for(const k of ['cansDead','dropsGone','ents','hits','revive']) Playroom.setState(k,{},true); } }catch(e){}   // host wipes any stale world/enemy deltas
     Playroom.onPlayerJoin((state) => {
       if(state.id===Playroom.myPlayer().id) return;                         // skip self
       others.push(state);
