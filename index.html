@@ -1028,7 +1028,9 @@ function coopApply(){                                 // pull shared can/drop de
 // each client against the shared attack state (proximity to whoever the enemy is on).
 // Bosses stay off in co-op for now. All wrapped so a hiccup can't throw into update().
 let _entSeq=0;
-function entId(){ return 'e'+(_entSeq++); }
+// tagged with my player id in co-op — with host handoff, TWO clients can mint ids over a
+// session, and a bare counter would collide ('e0' from each) inside the id-keyed snapshot
+function entId(){ return 'e'+(_entSeq++)+(MP?'_'+coopMyId().slice(-4):''); }
 // The host is the player with the lowest id (== "1P" in the id-sorted colouring) — a
 // DETERMINISTIC election every client computes identically, so there is exactly one host,
 // and ONLY the host spawns enemies (Playroom.isHost() read true on both clients under
@@ -1036,15 +1038,23 @@ function entId(){ return 'e'+(_entSeq++); }
 // Critically, on any uncertainty (no player yet / a transient error) we default to GUEST
 // so a client never spuriously spawns a second set of enemies.
 let _amHost = true;   // solo default
+function coopDownFlag(p){                        // is this player on the pavement?
+  try{ const me=Playroom.myPlayer();
+    if(me && p.id===me.id) return !!P.downed;    // my own down state is local truth, not a stale sync read
+    const pos=p.getState&&p.getState('pos'); return !!(pos&&pos.down);
+  }catch(e){ return false; }
+}
 function coopUpdateHost(){
   if(!MP || typeof Playroom==="undefined"){ _amHost=true; return; }
   try{
     const me=Playroom.myPlayer(); if(!me){ _amHost=false; return; }   // don't know yet → guest, don't spawn
-    let min=me.id;
-    const parts = Playroom.getParticipants ? Playroom.getParticipants() : null;
-    if(parts){ for(const k in parts){ const p=parts[k]; const pid=(p&&p.id)||k; if(pid<min) min=pid; } }
-    else for(const o of others){ if(o && o.id<min) min=o.id; }
-    _amHost = (me.id===min);
+    // the host is the lowest-id player STILL STANDING. A downed host hands the world to the
+    // living player (who takes over simulation from its mirrored copy), so enemies never
+    // freeze while he's waiting on a revive — and he takes the world back when he's up.
+    let min=null;
+    if(!P.downed) min=me.id;
+    for(const o of others){ if(o && !coopDownFlag(o) && (min===null || o.id<min)) min=o.id; }
+    _amHost = (min!==null && me.id===min);
   }catch(e){ _amHost=false; }   // error → assume guest; never flip to host and spawn
 }
 function coopHost(){ return !MP || _amHost; }
@@ -1063,10 +1073,11 @@ const ENT_FIELDS=['id','k','x','z','y','face','state','st','anim','dead','hp','m
 // cans/drops maps; a per-frame enemy blob never reached the guest). The host writes the
 // snapshot (an id-keyed object) to its OWN player-state; the guest reads it off the host
 // player, exactly like it reads the host's 'pos'.
-function coopHostPlayer(){                        // the lowest-id player's PlayerState (the authority)
-  try{ const me=Playroom.myPlayer(); let host=me;
-    for(const o of others){ if(o && o.id<host.id) host=o; }
-    return host;
+function coopHostPlayer(){                        // the lowest-id STANDING player's PlayerState (the authority)
+  try{ const me=Playroom.myPlayer(); let host=null;
+    if(me && !P.downed) host=me;
+    for(const o of others){ if(o && !coopDownFlag(o) && (!host || o.id<host.id)) host=o; }
+    return host||me;                              // whole team down → fall back to me (nothing to read anyway)
   }catch(e){ return null; }
 }
 // RELIABLE delivery is the whole trick here. Player 'pos' is a tiny flat object, so it
@@ -1144,10 +1155,14 @@ function coopReviveTeammate(){                    // living player pays 500 to b
   try{ const m=Playroom.getState('revive')||{}; m[o.id]=(m[o.id]||0)+1; Playroom.setState('revive',m,true); }catch(_){}
   say(P.x,P.z-30,'REVIVED TEAMMATE  -$500','#3ad1ff'); blip(680,.08); return true;
 }
+let _allDownT=0;
 function coopDownedUpdate(){                      // you're on the pavement, frozen, until a teammate pays up
   try{ const m=Playroom.getState('revive'), my=coopMyId();
     if(m && m[my] && m[my]>_lastRevive){ _lastRevive=m[my]; P.downed=false; P.hp=P.maxhp; P.drunk=0; lives=1; respawn(); return; }
   }catch(_){}
+  if(MP) coopMirrorEnts();       // spectate the live fight (the living player is hosting now) — and hand the world back current on revive
+  if(coopTeammateAlive()) _allDownT=0;
+  else if(++_allDownT>180){ _allDownT=0; showContinue(); }   // whole team on the pavement (3s grace for sync blips) → the night's over
   camX+=((P.x-W*0.42)-camX)*0.09; camX=Math.max(0,camX);
 }
 function puff(x,z,y,n,col){ for(let i=0;i<n;i++) parts.push({x,z,y,vx:rnd(-2,2),vy:rnd(-.4,2.6),vz:rnd(-.7,.7),life:rnd(14,30),col}); }
@@ -2490,7 +2505,7 @@ function update(){
       if(bossDeaths>2 && !bossNagged){ bossNagged=true; showNotice('YOU SHOULD TRY NOT TO GET HIT'); } }
     lives--;
     if(lives>0){ respawn(); say(P.x,P.z,lives+(lives>1?' LIVES':' LIFE')+' LEFT','#ff2e88'); }
-    else if(MP && coopTeammateAlive()){ P.downed=true; P.state='down'; P.downT=1e9;   // co-op: go down, wait for a $500 revive
+    else if(MP && others.length){ P.downed=true; P.state='down'; P.downT=1e9;   // co-op with anyone in the room: go down (a transient pos-read blip must not skip this into the recap)
       say(P.x,P.z-30,'DOWNED — TEAMMATE CAN REVIVE ($500)','#ff2e88'); rumble(340,1,.7,true); }
     else if(P.conf>=99.5) showBuiltDiff();             // bar reads 100 (per-tick bleed already shaved it) → free clutch revive
     else showContinue();                               // out of lives → pay to continue, or call it
@@ -2499,6 +2514,7 @@ function update(){
 // put the player back on their feet in place — no money loss; lives are the cost now.
 function respawn(){
   P.hp=P.maxhp; P.drunk=0; P.x=Math.max(20,camX+40); P.z=300; P.y=0; P.vy=0; P.state='idle';
+  P.downed=false;                                  // respawn puts you on your feet — never leave the down flag set (continue path relies on this)
   P.step=0; P.buf=0; P.talkN=null; P.downT=0; P.iframes=110;
   P.cageB=null; P.struggle=0; if(boss) boss.caged=false;   // spring the briefcase if you died inside it
   P.grabE=null; P.grabbedBy=null; P.inStreet=false;        // clear any grab in progress
@@ -3644,9 +3660,20 @@ function hud(){
     ctx.fillStyle = live ? '#3ad1ff' : '#ff2e88';
     const nAlive = ents.filter(e=>!e.dead).length;
     ctx.fillText('CO-OP'+(live?' · '+(others.length+1)+'P '+(coopHost()?'H':'G')+' · E'+nAlive:' · connecting…'), W-10, 14);
-    if(!P.downed && coopDownedTeammate()){ ctx.textAlign='center'; ctx.font='bold 9px "JetBrains Mono",monospace';
-      ctx.fillStyle = P.money>=500 ? '#3ad1ff' : '#ff2e88';
-      ctx.fillText(P.money>=500 ? 'TALK: REVIVE TEAMMATE  ($500)' : 'TEAMMATE DOWN — NEED $500', W/2, 24); }
+    const dt=coopDownedTeammate();
+    if(!P.downed && dt){ const can=P.money>=500, blink=t%40<28;
+      ctx.textAlign='center'; ctx.font='bold 11px "JetBrains Mono",monospace';
+      ctx.fillStyle = can ? '#3ad1ff' : '#ff2e88';
+      if(blink) ctx.fillText(can ? 'TEAMMATE DOWN — TALK TO REVIVE ($500)' : 'TEAMMATE DOWN — NEED $500 TO REVIVE', W/2, 26);
+      try{ const p=dt.getState('pos');                      // marker over the body (clamped on-screen so it points even from far away)
+        if(p){ const mx=clamp(p.x-camX, 26, W-26);
+          ctx.font='bold 9px "JetBrains Mono",monospace';
+          if(blink) ctx.fillText(can ? 'REVIVE' : '$500', mx, p.z-(p.y||0)-64);
+          ctx.fillText('▼', mx, p.z-(p.y||0)-54); } }catch(_){}
+    }
+    if(P.downed){ ctx.textAlign='center'; ctx.font='bold 11px "JetBrains Mono",monospace';
+      ctx.fillStyle='#ff2e88';
+      if(t%40<28) ctx.fillText("YOU'RE DOWN — TEAMMATE CAN REVIVE YOU ($500)", W/2, 26); }
     ctx.restore(); ctx.textAlign='left'; }
 
   ctx.font='7px "JetBrains Mono",monospace';
