@@ -1041,12 +1041,20 @@ function coopMyId(){ try{ return (Playroom.myPlayer()&&Playroom.myPlayer().id)||
 
 const ENT_FIELDS=['id','k','x','z','y','face','state','st','anim','dead','hp','maxhp','w','d','h',
   'skin','elite','big','fire','dmg','flash','hitAnimT','recoil','recoilT','tok','hitstun','enter','plasmaCd'];
-// Broadcast as an OBJECT keyed by enemy id, not an array — PlayroomKit room state syncs
-// plain objects reliably (same as cansDead/dropsGone) but drops/mangles arrays, which is
-// why the guest was receiving no enemies.
-function coopBroadcastEnts(){ try{ const o={}; for(const e of ents){ const s={}; for(const f of ENT_FIELDS) s[f]=e[f]; o[e.id]=s; } Playroom.setState('ents', o); }catch(e){} }
-function coopMirrorEnts(){                       // guest: replace local enemies with the host's snapshot
-  try{ const snap=Playroom.getState('ents'); ents.length=0;
+// Enemies ride the SAME channel as player positions — player-state — because that's the one
+// proven to sync every frame (global room state only carries the small, infrequent
+// cans/drops maps; a per-frame enemy blob never reached the guest). The host writes the
+// snapshot (an id-keyed object) to its OWN player-state; the guest reads it off the host
+// player, exactly like it reads the host's 'pos'.
+function coopHostPlayer(){                        // the lowest-id player's PlayerState (the authority)
+  try{ const me=Playroom.myPlayer(); let host=me;
+    for(const o of others){ if(o && o.id<host.id) host=o; }
+    return host;
+  }catch(e){ return null; }
+}
+function coopBroadcastEnts(){ try{ const o={}; for(const e of ents){ const s={}; for(const f of ENT_FIELDS) s[f]=e[f]; o[e.id]=s; } Playroom.myPlayer().setState('ents', o); }catch(e){} }
+function coopMirrorEnts(){                        // guest: replace local enemies with the host's snapshot
+  try{ const hp=coopHostPlayer(); const snap=hp && hp.getState('ents'); ents.length=0;
     if(snap) for(const k in snap){ const s=snap[k]; if(s) ents.push(Object.assign({vx:0,vy:0,cd:0,enterZ:s.z,recoil:0,recoilT:0}, s)); }
   }catch(e){ ents.length=0; }
 }

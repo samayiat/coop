@@ -668,21 +668,22 @@ if(!err){
     const seen=new Set(); for(let x=200;x<6000;x+=520) seen.add(g.mkNpc(x,306).who);
     if(seen.size<2) throw new Error('mkNpc gives the same woman at every door — not seeded by position');
   });
-  scene('co-op: enemy snapshot round-trips host->guest (id-keyed object)', ()=>{
-    // The host broadcasts enemies and the guest must rebuild them. Broadcasting as an ARRAY
-    // silently dropped through PlayroomKit room state (guest saw no enemies); an id-keyed
-    // object round-trips. Verify the shape and that the guest reconstructs every enemy.
+  scene('co-op: enemy snapshot round-trips via player-state (id-keyed object)', ()=>{
+    // Enemies ride the host's PLAYER-state (same channel as 'pos'), not global room state.
+    // The host writes an id-keyed object to its player-state; the guest reads it off the
+    // host player and rebuilds every enemy. (An array over room state reached no one.)
     const g=__G();
-    const store={};
-    global.Playroom={ myPlayer:()=>({id:'me'}), getState:k=>store[k], setState:(k,v)=>{store[k]=v;} };
+    const s={};
+    const meP={ id:'me', setState:(k,v)=>{s[k]=v;}, getState:k=>s[k] };
+    global.Playroom={ myPlayer:()=>meP, getState:()=>null, setState:()=>{} };
     __setMP(true);
     g.clearEnts(); g.spawn(g.vamp(500,306,false)); g.spawn(g.rat(560,310));
     g.coopBroadcastEnts();
-    const ok = store.ents && !Array.isArray(store.ents) && Object.keys(store.ents).length===2;
+    const ok = s.ents && !Array.isArray(s.ents) && Object.keys(s.ents).length===2;
     g.clearEnts(); g.coopMirrorEnts();
     const n=g.ents.length;
     __setMP(false); delete global.Playroom; g.clearEnts();
-    if(!ok) throw new Error('enemy snapshot is not a 2-entry id-keyed object');
+    if(!ok) throw new Error('enemy snapshot is not a 2-entry id-keyed object on player-state');
     if(n!==2) throw new Error('guest mirror rebuilt '+n+' enemies, expected 2');
   });
   scene('co-op: cans + drops sync, and cash pays both players', ()=>{
