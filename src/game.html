@@ -1059,7 +1059,11 @@ function coopBroadcastEnts(){
     const o={};
     for(const e of ents){ const s={}; for(const f of ENT_FIELDS) s[f]=e[f]; o[e.id]=s; }
     Playroom.myPlayer().setState('ents', o);
-    if(OPT.dev) console.log('[BROADCAST] host sending', Object.keys(o).length, 'enemies:', Object.keys(o).slice(0,3));
+    if(OPT.dev){
+      const first=Object.values(o)[0];
+      console.log('[BROADCAST] host sending', Object.keys(o).length, 'enemies');
+      if(first) console.log('[BROADCAST] first enemy sample:', {id:first.id, k:first.k, x:first.x, z:first.z, state:first.state, dead:first.dead});
+    }
   }catch(e){ if(OPT.dev) console.error('[BROADCAST] error:', e.message); }
 }
 function coopMirrorEnts(){                        // guest: replace local enemies with the host's snapshot
@@ -1068,7 +1072,16 @@ function coopMirrorEnts(){                        // guest: replace local enemie
     const snap=hp && hp.getState('ents');
     const before=ents.length;
     ents.length=0;
-    if(snap) for(const k in snap){ const s=snap[k]; if(s) ents.push(Object.assign({vx:0,vy:0,cd:0,enterZ:s.z,recoil:0,recoilT:0}, s)); }
+    if(snap){
+      for(const k in snap){
+        const s=snap[k];
+        if(s){
+          const e=Object.assign({vx:0,vy:0,cd:0,enterZ:s.z,recoil:0,recoilT:0}, s);
+          ents.push(e);
+          if(OPT.dev && ents.length===1) console.log('[MIRROR] first enemy sample:', {id:e.id, k:e.k, x:e.x, z:e.z, state:e.state, dead:e.dead});
+        }
+      }
+    }
     if(OPT.dev && (ents.length>0||before>0)) console.log('[MIRROR] guest got', ents.length, 'enemies (was', before, ')');
     if(!snap && OPT.dev) console.log('[MIRROR] no snapshot from host:', hp?'host exists':'no host');
   }catch(e){ ents.length=0; if(OPT.dev) console.error('[MIRROR] error:', e.message); }
