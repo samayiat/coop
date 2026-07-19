@@ -1054,35 +1054,38 @@ function coopHostPlayer(){                        // the lowest-id player's Play
     return host;
   }catch(e){ return null; }
 }
+// RELIABLE delivery is the whole trick here. Player 'pos' is a tiny flat object, so it
+// survives PlayroomKit's default (unreliable, size-limited) fast path at 60Hz. The enemy
+// snapshot is a big nested object — on the unreliable path it silently never arrives, so
+// the guest only ever saw the one copy delivered by the reliable initial state sync on
+// join: enemies that exist but never move. Sending reliable (3rd arg) uses the websocket
+// path that provably delivers; the 20Hz throttle at the call site keeps it from flooding.
 function coopBroadcastEnts(){
   try{
     const o={};
-    for(const e of ents){ const s={}; for(const f of ENT_FIELDS) s[f]=e[f]; o[e.id]=s; }
-    Playroom.myPlayer().setState('ents', o);
-    if(OPT.dev){
-      const first=Object.values(o)[0];
-      console.log('[BROADCAST] host sending', Object.keys(o).length, 'enemies');
-      if(first) console.log('[BROADCAST] first enemy sample:', {id:first.id, k:first.k, x:first.x, z:first.z, state:first.state, dead:first.dead});
-    }
+    for(const e of ents){ const s={}; for(const f of ENT_FIELDS){ let v=e[f];
+      if(typeof v==='number') v=Math.round(v*10)/10;   // shrink the payload — sub-decimal precision is invisible
+      s[f]=v; } o[e.id]=s; }
+    Playroom.myPlayer().setState('ents', o, true);
+    if(OPT.dev) console.log('[BROADCAST] host sent', Object.keys(o).length, 'enemies (reliable)');
   }catch(e){ if(OPT.dev) console.error('[BROADCAST] error:', e.message); }
 }
-function coopMirrorEnts(){                        // guest: replace local enemies with the host's snapshot
+function coopMirrorEnts(){                        // guest: rebuild enemies from the host's snapshot
   try{
     const hp=coopHostPlayer();
     const snap=hp && hp.getState('ents');
-    const before=ents.length;
+    const prev={}; for(const e of ents) prev[e.id]=e;
     ents.length=0;
     if(snap){
       for(const k in snap){
-        const s=snap[k];
-        if(s){
-          const e=Object.assign({vx:0,vy:0,cd:0,enterZ:s.z,recoil:0,recoilT:0}, s);
-          ents.push(e);
-          if(OPT.dev && ents.length===1) console.log('[MIRROR] first enemy sample:', {id:e.id, k:e.k, x:e.x, z:e.z, state:e.state, dead:e.dead});
-        }
+        const s=snap[k]; if(!s) continue;
+        const p=prev[s.id], px=p?p.x:0, pz=p?p.z:0, py=p?p.y:0;
+        const e=Object.assign(p||{vx:0,vy:0,cd:0,enterZ:s.z,recoil:0,recoilT:0}, s);
+        if(p && !s.dead){   // snapshots land at 20Hz — ease toward the authoritative spot so motion stays 60fps-smooth
+          e.x=px+(s.x-px)*0.4; e.z=pz+(s.z-pz)*0.4; e.y=py+(s.y-py)*0.4; }
+        ents.push(e);
       }
     }
-    if(OPT.dev && (ents.length>0||before>0)) console.log('[MIRROR] guest got', ents.length, 'enemies (was', before, ')');
     if(!snap && OPT.dev) console.log('[MIRROR] no snapshot from host:', hp?'host exists':'no host');
   }catch(e){ ents.length=0; if(OPT.dev) console.error('[MIRROR] error:', e.message); }
 }
@@ -2350,7 +2353,7 @@ function update(){
     }
   }
   ents=ents.filter(e=>e.dead<28);
-  if(MP && coopHost()) coopBroadcastEnts();                  // host: publish the enemy snapshot to teammates
+  if(MP && coopHost() && t%3===0) coopBroadcastEnts();       // host: publish the enemy snapshot, 20Hz (reliable channel — don't flood it)
   }
 
   //---- cans
