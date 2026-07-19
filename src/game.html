@@ -3310,9 +3310,11 @@ function drawPlayer(){
   let tilt = (P.state==='punch'||P.state==='air') ? 0 : P.lean*0.42;
   if(P.state==='down') tilt = -P.face*clamp((66-P.downT)/12,0,1)*1.45;   // he goes flat
   if(Math.abs(tilt)>0.005){ ctx.save(); ctx.translate(P.x-camX,P.z); ctx.rotate(tilt); ctx.translate(-(P.x-camX),-P.z); }
+  if(MP && myCoopIdx>=0){ tint=COOP_COLORS[myCoopIdx]; amt=0.45; }   // co-op identity mask on yourself too
   spr(key,P.x-camX,P.z-P.y,P.face,tint,amt);
   if(Math.abs(tilt)>0.005) ctx.restore();
   ctx.globalAlpha=1;
+  if(MP && myCoopIdx>=0) coopTag(P.x-camX, P.z-P.y, myCoopIdx);       // 1P/2P/… above your own head
   // held weapon, in hand
   if(P.weapon){ const w=WEAPONS[P.weapon.type], sx=P.x-camX, hy=P.z-P.y-30;
     const swing=P.state==='punch', wind=P.state==='wthrow';
@@ -3346,9 +3348,22 @@ function drawPlayer(){
     ctx.fillStyle='#ff2e88'; ctx.font='bold 9px "JetBrains Mono",monospace'; ctx.textAlign='center';
     if(t%12<8) ctx.fillText('MASH!', sx, P.z-100); } }
 
+// co-op identity: a stable colour + "NP" tag per player, identical on every client.
+// 1P red · 2P blue · 3P yellow · 4P green. The index is a sort of the player ids, so all
+// clients agree who is 1P/2P/…; myCoopIdx (this client) is set in render()'s MP block.
+const COOP_COLORS=['#ff3b3b','#3b8dff','#ffd23a','#3ad14a'];
+let myCoopIdx=-1;
+function coopTag(sx, by, idx){
+  const label=(idx+1)+'P';
+  ctx.save(); ctx.textAlign='center'; ctx.font='bold 9px "JetBrains Mono",monospace';
+  ctx.fillStyle='rgba(0,0,0,.6)';   ctx.fillText(label, sx, by-49);   // drop shadow
+  ctx.fillStyle=COOP_COLORS[idx%4]; ctx.fillText(label, sx, by-50);
+  ctx.restore();
+}
+
 function drawRemotePlayer(o, pos, idx){
   // a teammate, drawn from their last synced {x,y,z,state,face}. Same screen mapping and
-  // sprite keys as drawPlayer, tinted by co-op slot so you can tell each other apart.
+  // sprite keys as drawPlayer, masked in their co-op colour with an NP tag over the head.
   const sx = pos.x - camX, sy = pos.z - pos.y;
   shadow(pos.x, pos.z, 16 - pos.y*0.06);
   let key = 'hero.rot.east';
@@ -3362,8 +3377,8 @@ function drawRemotePlayer(o, pos, idx){
     case 'punch': key='hero.punch.'+(Math.floor(t*0.3)%6); break;
   }
   const face = (pos.face===-1||pos.face===1) ? pos.face : 1;   // synced facing (default east)
-  const COOP = ['#ff2a2a','#2f8fff','#2fa01f','#ffb545'];      // red, blue, green, yellow
-  spr(key, sx, sy, face, COOP[idx%4], 0.4);
+  spr(key, sx, sy, face, COOP_COLORS[idx%4], 0.45);
+  coopTag(sx, sy, idx);
 }
 
 function drawDrop(d){ const sx=d.x-camX, y=d.z-d.y; shadow(d.x,d.z,5);
@@ -3553,10 +3568,14 @@ function render(){
   // `others`; no room-wide roster lookup is needed.
   if(MP && typeof Playroom !== "undefined" && Playroom.myPlayer()){
     try{
-      Playroom.myPlayer().setState("pos", {x:P.x, y:P.y, z:P.z, state:P.state, face:P.face});
-      for(let i=0;i<others.length;i++){
-        const o=others[i], pos=o.getState("pos");
-        if(pos) list.push({z:pos.z, f:()=>drawRemotePlayer(o, pos, i)});
+      const me=Playroom.myPlayer();
+      me.setState("pos", {x:P.x, y:P.y, z:P.z, state:P.state, face:P.face});
+      // stable global order: sort all player ids so every client agrees on 1P/2P/3P/4P
+      const order=[me.id, ...others.map(o=>o.id)].filter((v,i,a)=>a.indexOf(v)===i).sort();
+      myCoopIdx=order.indexOf(me.id);
+      for(const o of others){
+        const pos=o.getState("pos");
+        if(pos) list.push({z:pos.z, f:()=>drawRemotePlayer(o, pos, order.indexOf(o.id))});
       }
     }catch(e){ if(!render._mpWarned){ console.error("co-op sync error:", e.message||e); render._mpWarned=true; } }
   }
