@@ -102,6 +102,8 @@ const driver = `
 ;globalThis.__titleTick=()=>titleTick();
 ;globalThis.__titleRender=()=>titleRender();
 ;globalThis.__start=()=>startGame();
+;globalThis.__setMP=(v)=>{ MP=v; };
+;globalThis.__others=()=>others;
 `;
 let err=null;
 try{
@@ -623,6 +625,21 @@ if(!err){
   });
   scene('render every frame for 600 ticks', ()=>{
     for(let i=0;i<600;i++){ __tick(1); __draw(); }
+  });
+  scene('co-op: a remote teammate renders without freezing the loop', ()=>{
+    // stub PlayroomKit: a local player + one remote broadcasting a synced pos.
+    // Regression guard for the getAllPlayers() crash — this drove render() out of the
+    // rAF loop the instant a peer appeared. render() must survive a remote being present.
+    const g=__G();
+    const remote={ id:'r1', onQuit:()=>{},
+      getState:(k)=> k==='pos' ? {x:g.P.x+40, y:0, z:g.P.z, state:'walk', face:-1} : null };
+    global.Playroom={ myPlayer:()=>({ id:'me', setState:()=>{}, getState:()=>null }) };
+    __others().length=0; __others().push(remote);
+    __setMP(true);
+    let threw=null;
+    try{ for(let i=0;i<60;i++){ __draw(); } }catch(e){ threw=e; }
+    __setMP(false); __others().length=0; delete global.Playroom;
+    if(threw) throw new Error('render threw with a remote present: '+threw.message);
   });
   const g2=__G();
   console.log('\nend state: x='+Math.round(g2.P.x)+'  block '+(g2.tier()+1)+

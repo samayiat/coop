@@ -3343,21 +3343,24 @@ function drawPlayer(){
     ctx.fillStyle='#ff2e88'; ctx.font='bold 9px "JetBrains Mono",monospace'; ctx.textAlign='center';
     if(t%12<8) ctx.fillText('MASH!', sx, P.z-100); } }
 
-function drawRemotePlayer(state, pos, playerIndex){
-  // draw a remote player at (pos.x, pos.y, pos.z) with co-op color tint
-  const sx = pos.x - camX;
-  const sy = pos.z - pos.y;
-  shadow(pos.x, pos.z, 16 - pos.y * 0.06);
+function drawRemotePlayer(o, pos, idx){
+  // a teammate, drawn from their last synced {x,y,z,state,face}. Same screen mapping and
+  // sprite keys as drawPlayer, tinted by co-op slot so you can tell each other apart.
+  const sx = pos.x - camX, sy = pos.z - pos.y;
+  shadow(pos.x, pos.z, 16 - pos.y*0.06);
   let key = 'hero.rot.east';
-  if(pos.state === 'walk') key = 'hero.walk.' + (Math.floor(t*0.16)%6);
-  if(pos.state === 'idle') key = 'hero.rot.east';
-  if(pos.state === 'jump') key = 'hero.jump.' + clamp(Math.floor(pos.y/4.4), 0, 7);
-  if(pos.state === 'punch') key = 'hero.rot.east';  // simplified: no combo tracking for remotes
-
-  // player colors: red, blue, green, yellow
-  const playerColors = ['#ff2a2a', '#2f8fff', '#2fa01f', '#ffb545'];
-  const tint = playerColors[playerIndex % 4];
-  spr(key, sx, sy, 1, tint, 0.35);  // face=1 (east), tint by player, alpha for visibility
+  switch(pos.state){
+    case 'walk':  key='hero.walk.'+(Math.floor(t*0.16)%6); break;
+    case 'air':
+    case 'jump':  key='hero.jump.'+clamp(Math.floor(pos.y/4.4),0,7); break;
+    case 'drink': key='hero.drink.'+(Math.floor(t*0.16)%6); break;
+    case 'talk':  key='hero.swag.'+(Math.floor(t*0.09)%8); break;
+    case 'down':  key='hero.jump.5'; break;
+    case 'punch': key='hero.punch.'+(Math.floor(t*0.3)%6); break;
+  }
+  const face = (pos.face===-1||pos.face===1) ? pos.face : 1;   // synced facing (default east)
+  const COOP = ['#ff2a2a','#2f8fff','#2fa01f','#ffb545'];      // red, blue, green, yellow
+  spr(key, sx, sy, face, COOP[idx%4], 0.4);
 }
 
 function drawDrop(d){ const sx=d.x-camX, y=d.z-d.y; shadow(d.x,d.z,5);
@@ -3531,19 +3534,20 @@ function render(){
   for(const e of ents) list.push({z:e.z,f:()=>e.k==='boss'?drawBoss(e):e.k==='rat'?drawRat(e):e.k==='sammich'?drawSammich(e):drawVamp(e)});
   list.push({z:P.z,f:drawPlayer});
 
-  // multiplayer: publish state and add remotes to render list
+  // multiplayer: publish our state, then queue every teammate for drawing.
+  // The whole block is wrapped so a networking hiccup can never throw out of render()
+  // and kill the rAF loop. That freeze was Playroom.getAllPlayers() — NOT a real
+  // PlayroomKit call (the roster API is getParticipants()/getSpectators()) — so it threw
+  // the instant a peer's pos was read. The colour index is just the player's slot in
+  // `others`; no room-wide roster lookup is needed.
   if(MP && typeof Playroom !== "undefined" && Playroom.myPlayer()){
-    Playroom.myPlayer().setState("pos", {x: P.x, y: P.y, z: P.z, state: P.state});
-    if(t % 60 === 0) console.log("DEBUG: others.length =", others.length, "others =", others); // debug every 1 sec
-    for(const o of others){
-      const pos = o.getState("pos");
-      if(t % 60 === 0) console.log("DEBUG: player", o.id, "pos =", pos); // debug
-      if(pos) {
-        // get player index: count how many players are before this one
-        const playerIndex = Playroom.getAllPlayers().findIndex(p => p.id === o.id);
-        list.push({z: pos.z, f: ()=>drawRemotePlayer(o, pos, playerIndex)});
+    try{
+      Playroom.myPlayer().setState("pos", {x:P.x, y:P.y, z:P.z, state:P.state, face:P.face});
+      for(let i=0;i<others.length;i++){
+        const o=others[i], pos=o.getState("pos");
+        if(pos) list.push({z:pos.z, f:()=>drawRemotePlayer(o, pos, i)});
       }
-    }
+    }catch(e){ if(!render._mpWarned){ console.error("co-op sync error:", e.message||e); render._mpWarned=true; } }
   }
 
   list.sort((a,b)=>a.z-b.z);
