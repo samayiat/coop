@@ -775,6 +775,7 @@ function reset(){
   ents=[];drops=[];parts=[];floats=[];fires=[];camLock=null;camX=0;camFlash=0;
   boss=null; bossDone=0; bossDeaths=0; bossNagged=false; gauntlet=0; gauntletIx=0; dateOn=false; date=null; $('touch').classList.remove('dating');
   busMob=null; busMobAt = t + (Math.random()<0.75 ? Math.floor(rnd(1800,5400)) : Infinity);   // ~once a run, not guaranteed
+  dueling=false; duelPhase='none'; duelSave=null;   // a manual RESET RUN mid-duel just bails out locally
   lives=3; continues=0; night={bosses:0,women:0,cash:0,reach:0,traffic:0}; dawnShown=false;   // fresh night
   cans=[]; npcs=[]; crowd=[]; cars=[]; litter=[]; steam=[]; props=[];
   BUILDINGS=[]; CLUBS=[]; GRATES=[]; GATES=[]; MADE.clear();
@@ -1201,6 +1202,98 @@ function coopDownedUpdate(){                      // you're on the pavement, fro
 }
 function puff(x,z,y,n,col){ for(let i=0;i<n;i++) parts.push({x,z,y,vx:rnd(-2,2),vy:rnd(-.4,2.6),vz:rnd(-.7,.7),life:rnd(14,30),col}); }
 function say(x,z,txt,col){ floats.push({x,z,y:78,txt,col:col||'#fff',life:60}); }
+
+// ---- co-op PvP duel: punch a teammate 3x to challenge, get punched back 3x to accept ------
+// Bookkeeping lives in one ROOM-level object (not per-player) since a duel is inherently a
+// shared 2-party event. Only whoever's punch just connected ever writes to it (read latest,
+// bump only your own side, write back) — same single-writer-per-field discipline as the
+// enemy 'hits' map, so two clients can't stomp each other's tally. Not built for 3+ players
+// dueling at once: a punch thrown by/at someone outside the live duel is just ignored.
+const DUEL_HP=100, DUEL_DMG=15, DUEL_LIVES=3, DUEL_TIMEOUT=300;   // ~5s of no reply lapses a challenge
+const DUEL_X0=40, DUEL_X1=260, DUEL_Z=300;      // the little room — same layout every time, no real street coords
+let dueling=false, duelPhase='none', duelT=0, duelSave=null, duelSeenHp=DUEL_HP;
+function pvpState(){ try{ return Playroom.getState('pvp'); }catch(e){ return null; } }
+function pvpSet(d){ try{ Playroom.setState('pvp', d, true); }catch(e){} }
+function pvpPunch(targetId){
+  if(!MP) return;
+  const my=coopMyId(); if(!my||!targetId||my===targetId) return;
+  let d=pvpState();
+  const expired = d && d.phase==='challenge' && t-d.lastT>DUEL_TIMEOUT;
+  if(!d || d.phase==='off' || d.phase==='end' || expired){
+    if(boss || busMob || camLock!==null) return;   // don't clobber an active boss/wave/bus-mob fight
+    pvpSet({a:my,b:targetId,phase:'challenge',hitsA:1,hitsB:0,hpA:DUEL_HP,hpB:DUEL_HP,
+      livesA:DUEL_LIVES,livesB:DUEL_LIVES,winner:null,lastT:t});
+    say(P.x,P.z-40,'DUEL?!','#ff2e88'); return;
+  }
+  const involved = (d.a===my||d.b===my) && (d.a===targetId||d.b===targetId);
+  if(!involved) return;                             // a duel not involving me/them is already live
+  if(d.phase==='challenge'){
+    d.lastT=t;
+    if(d.a===my && d.b===targetId) d.hitsA=Math.min(3,d.hitsA+1);
+    else if(d.b===my && d.a===targetId){
+      d.hitsB=Math.min(3,d.hitsB+1);
+      if(d.hitsB>=3){ d.phase='active'; d.hpA=DUEL_HP; d.hpB=DUEL_HP; d.livesA=DUEL_LIVES; d.livesB=DUEL_LIVES; }
+    }
+    pvpSet(d); return;
+  }
+  if(d.phase==='active'){
+    if(targetId===d.a){ d.hpA=Math.max(0,d.hpA-DUEL_DMG);
+      if(d.hpA<=0){ d.hpA=DUEL_HP; d.livesA--; if(d.livesA<=0){ d.phase='end'; d.winner=d.b; } } }
+    else if(targetId===d.b){ d.hpB=Math.max(0,d.hpB-DUEL_DMG);
+      if(d.hpB<=0){ d.hpB=DUEL_HP; d.livesB--; if(d.livesB<=0){ d.phase='end'; d.winner=d.a; } } }
+    pvpSet(d);
+  }
+}
+function pvpTick(){
+  const d=pvpState(); const my=coopMyId();
+  if(d && d.phase==='challenge' && (d.a===my||d.b===my) && t-d.lastT>DUEL_TIMEOUT) pvpSet(Object.assign({},d,{phase:'off'}));
+  if(d && (d.a===my||d.b===my) && d.phase==='active' && !dueling) duelEnter(d);
+  if(dueling && duelPhase==='active' && d && d.phase==='end'){ duelPhase='result'; duelT=0; }
+  if(dueling && duelPhase==='result'){ duelT++; if(duelT>90){ duelPhase='transit-back'; duelT=0; } }
+  if(dueling && duelPhase==='active' && d){                    // feel it when the shared hp drops under me
+    const amA=d.a===my, myHp=amA?d.hpA:d.hpB;
+    if(myHp<duelSeenHp){ shake=Math.max(shake,4); hitstop=Math.max(hitstop,4); P.hitFlash=16;
+      rumble(200,.8,.5,true); blip(90,.08); }
+    duelSeenHp=myHp;
+  }
+}
+// slide off-frame to the left (in), same to leave — "whatever's easiest" to sell a scene change
+function duelTransitTick(){
+  duelT++;
+  if(duelPhase==='transit-out'){
+    P.x-=5; P.face=-1;
+    if(duelT>=26){
+      camFlash=1; blip(120,.05);
+      const d=pvpState(), my=coopMyId(), amA=d&&d.a===my;
+      P.x = amA?DUEL_X0+50:DUEL_X1-50; P.z=DUEL_Z; P.y=0; P.vy=0;
+      P.face = amA?1:-1; P.state='idle'; P.st=0; P.step=0; P.buf=0; P.hitDone=false;
+      camX=DUEL_X0-40;
+      duelSeenHp = d ? (amA?d.hpA:d.hpB) : DUEL_HP;
+      duelPhase='active'; duelT=0;
+    }
+  } else if(duelPhase==='transit-back'){
+    P.x-=5;
+    if(duelT>=26) duelExitFinish();
+  }
+}
+function duelEnter(d){
+  dueling=true; duelPhase='transit-out'; duelT=0;
+  duelSave={x:P.x,z:P.z,y:P.y,camX,camLock,
+    ents,crowd,cans,npcs,drops,props,cars,fires,litter,steam};
+  ents=[]; crowd=[]; cans=[]; npcs=[]; drops=[]; props=[]; cars=[]; fires=[]; litter=[]; steam=[];
+  camLock=null; P.state='walk'; P.y=0; P.vy=0;
+  say(P.x,P.z-40,'HEADING INSIDE...','#ffb545');
+}
+function duelExitFinish(){
+  const s=duelSave, d=pvpState(), my=coopMyId();
+  ents=s.ents; crowd=s.crowd; cans=s.cans; npcs=s.npcs; drops=s.drops; props=s.props;
+  cars=s.cars; fires=s.fires; litter=s.litter; steam=s.steam;
+  P.x=s.x; P.z=s.z; P.y=s.y; P.vy=0; camX=s.camX; camLock=s.camLock;
+  P.state='idle'; P.st=0; P.step=0; P.buf=0; P.hitDone=false;
+  dueling=false; duelPhase='none'; duelSave=null;
+  if(d && d.winner) say(P.x,P.z-40, d.winner===my?'YOU WON THE DUEL':'RUN IT BACK SOMETIME','#c9d13a');
+  camFlash=1; blip(120,.05);
+}
 
 function spawnWave(T){
   if(coopGuest()) return;    // host spawns waves; the guest mirrors them
@@ -2190,8 +2283,10 @@ function ambient(){
 //====================== update ======================
 function update(){
   t++;
+  if(dueling && (duelPhase==='transit-out'||duelPhase==='transit-back')){ duelTransitTick(); return; }
   if(MP) coopUpdateHost();     // settle host/guest once per frame (lowest id = host = the only spawner)
   if(MP) coopApply();          // pull shared can/drop deltas from teammates before simulating
+  if(MP) pvpTick();            // duel challenge/accept/feel bookkeeping
   if(P.downed){ coopDownedUpdate(); return; }                                   // on the pavement — frozen until revived
   if(MP && P.money>=500 && coopDownedTeammate() && (tap('KeyE')||tapT('D'))) coopReviveTeammate();   // TALK by a downed teammate → pay $500
   for(const b of BUILDINGS) if(b.open>0)b.open--;
@@ -2247,6 +2342,10 @@ function update(){
       if(!P.hitDone) for(const cw of crowd){ if(cw.blob||cw.gone) continue;
         if(Math.abs(b.x-cw.x)<b.rw+13 && Math.abs(b.z-cw.z)<b.rd+9){
           aggro(cw,true); P.hitDone=true; P.connected=true; break; } }
+      // swing at a TEAMMATE: 3 hits challenges them to a duel, 3 back accepts it (see pvpPunch)
+      if(!P.hitDone && MP) for(const o of others){ const p=o.getState&&o.getState('pos'); if(!p||p.down) continue;
+        if(Math.abs(b.x-p.x)<b.rw+16 && Math.abs(b.z-p.z)<b.rd+10){
+          pvpPunch(o.id); P.hitDone=true; P.connected=true; break; } }
     }
     if(P.st>=cLen(s)){
       if(P.buf>0 && P.connected && P.step<3){       // chain
@@ -3798,6 +3897,12 @@ function hud(){
     if(P.downed){ ctx.textAlign='center'; ctx.font='bold 11px "JetBrains Mono",monospace';
       ctx.fillStyle='#ff2e88';
       if(t%40<28) ctx.fillText("YOU'RE DOWN — TEAMMATE CAN REVIVE YOU ($500)", W/2, 26); }
+    const pd=pvpState(), myId=coopMyId();
+    if(pd && pd.phase==='challenge' && (pd.a===myId||pd.b===myId) && t%40<28){
+      ctx.textAlign='center'; ctx.font='bold 11px "JetBrains Mono",monospace'; ctx.fillStyle='#ff2e88';
+      ctx.fillText(pd.a===myId ? 'DUEL SENT — HIT BACK 3x TO ACCEPT ('+pd.hitsA+'/3)'
+                                : 'DUEL?! HIT BACK 3x TO ACCEPT ('+pd.hitsB+'/3)', W/2, 40);
+    }
     ctx.restore(); ctx.textAlign='left'; }
 
   ctx.font='7px "JetBrains Mono",monospace';
@@ -3905,6 +4010,7 @@ function hud(){
 }
 
 function render(){
+  if(dueling && (duelPhase==='active'||duelPhase==='result')){ renderDuel(); return; }
   ctx.save();
   const sh=shake*OPT.shake;
   if(sh>1) ctx.translate(rnd(-sh,sh),rnd(-sh,sh));
@@ -4036,6 +4142,76 @@ function composite(){
   // the room breathes — starts earlier, pulses harder
   if(d>0.4){ dctx.globalAlpha=(d-0.4)/0.6*0.18*(0.5+0.5*Math.sin(t*0.05));
     dctx.fillStyle='#3a0f2a'; dctx.fillRect(0,0,W,H); dctx.globalAlpha=1; }
+}
+
+// ---- duel arena: same little room every time, "inside whichever restaurant" was nearest ----
+function renderDuel(){
+  ctx.save();
+  const sh=shake*OPT.shake; if(sh>1) ctx.translate(rnd(-sh,sh),rnd(-sh,sh));
+  drawDuelRoom();
+
+  const list=[]; list.push({z:P.z,f:drawPlayer});
+  if(MP && typeof Playroom!=="undefined" && Playroom.myPlayer()){
+    try{
+      const me=Playroom.myPlayer();
+      me.setState("pos", {x:P.x, y:P.y, z:P.z, state:P.state, face:P.face, down:!!P.downed, hp:P.hp});
+      const order=[me.id, ...others.map(o=>o.id)].filter((v,i,a)=>a.indexOf(v)===i).sort();
+      myCoopIdx=order.indexOf(me.id);
+      const d=pvpState(), my=coopMyId(), oppId = d ? (d.a===my?d.b:d.a) : null;
+      const o = oppId && others.find(x=>x.id===oppId);
+      if(o){ const pos=o.getState("pos"); if(pos) list.push({z:pos.z, f:()=>drawRemotePlayer(o, pos, order.indexOf(o.id))}); }
+    }catch(e){}
+  }
+  list.sort((a,b)=>a.z-b.z);
+  for(const o of list) o.f();
+
+  for(const p of parts){ ctx.globalAlpha=clamp(p.life/20,0,1); ctx.fillStyle=p.col;
+    ctx.fillRect(p.x-camX,p.z-p.y,2,2); } ctx.globalAlpha=1;
+  ctx.textAlign='center'; ctx.font='bold 10px "JetBrains Mono",monospace';
+  for(const f of floats){ ctx.globalAlpha=clamp(f.life/25,0,1);
+    ctx.fillStyle='#000'; ctx.fillText(f.txt,f.x-camX+1,f.z-f.y+1);
+    ctx.fillStyle=f.col; ctx.fillText(f.txt,f.x-camX,f.z-f.y); } ctx.globalAlpha=1;
+
+  ctx.restore();
+  if(camFlash>0){ ctx.fillStyle='rgba(255,255,255,'+clamp(camFlash,0,1)*0.85+')'; ctx.fillRect(0,0,W,H); }
+  drawDuelHud();
+  composite();
+}
+function drawDuelRoom(){
+  // the same generic interior every time — "whatever's easiest to depict them going somewhere else"
+  ctx.fillStyle='#1c1420'; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#3a2418'; ctx.fillRect(0,0,W,FLOOR_N+40);              // back wall, warm wood tone
+  ctx.fillStyle='#241810'; ctx.fillRect(0,FLOOR_N+40,W,6);              // wall/floor seam
+  ctx.fillStyle='#4a3020'; ctx.fillRect(0,FLOOR_N+46,W,H-(FLOOR_N+46)); // floor
+  ctx.fillStyle='rgba(0,0,0,.12)';
+  for(let i=0;i<10;i++) ctx.fillRect(i*64,FLOOR_N+46,2,H-(FLOOR_N+46)); // floor tiling, for depth
+  ctx.fillStyle='#5a3a24'; ctx.fillRect(20,FLOOR_N-6,150,30);           // the counter, back-left
+  ctx.fillStyle='#2f7a3f'; ctx.fillRect(20,FLOOR_N-10,150,6);           // awning stripe
+  ctx.fillStyle='#5a3a24';                                              // a couple of booth tables, back-right
+  ctx.fillRect(W-140,FLOOR_N-2,50,22); ctx.fillRect(W-70,FLOOR_N-2,50,22);
+  ctx.fillStyle='#ffb545'; ctx.font='bold 14px "Bebas Neue",sans-serif'; ctx.textAlign='center';
+  ctx.fillText('◆ DUEL ◆', W/2, FLOOR_N-16);
+  ctx.textAlign='left';
+}
+function drawDuelBar(x,y,hp,lives,col,label){
+  ctx.textAlign='left'; ctx.font='bold 8px "JetBrains Mono",monospace'; ctx.fillStyle=col;
+  ctx.fillText(label, x, y-3);
+  ctx.fillStyle='rgba(6,4,10,.85)'; ctx.fillRect(x-1,y,152,9);
+  ctx.fillStyle='#241a1a'; ctx.fillRect(x,y+1,150,7);
+  ctx.fillStyle=col; ctx.fillRect(x,y+1,150*clamp(hp/DUEL_HP,0,1),7);
+  for(let i=0;i<DUEL_LIVES;i++){ ctx.fillStyle = i<lives?col:'rgba(255,255,255,.15)'; ctx.fillRect(x+i*10, y+13, 7,7); }
+}
+function drawDuelHud(){
+  const d=pvpState(); if(!d) return;
+  const my=coopMyId(), amA=d.a===my;
+  drawDuelBar(20, 14, amA?d.hpA:d.hpB, amA?d.livesA:d.livesB, '#3ad1ff', 'YOU');
+  drawDuelBar(W-170, 14, amA?d.hpB:d.hpA, amA?d.livesB:d.livesA, '#ff2e88', 'THEM');
+  if(d.phase==='end'){
+    ctx.textAlign='center'; ctx.font='bold 16px "Bebas Neue",sans-serif';
+    ctx.fillStyle = d.winner===my ? '#c9d13a' : '#ff2e88';
+    ctx.fillText(d.winner===my?'YOU WIN THE DUEL':'YOU LOSE THE DUEL', W/2, H*0.4);
+    ctx.textAlign='left';
+  }
 }
 
 //====================== title ======================
@@ -4175,7 +4351,7 @@ async function startCoop(){
     await Playroom.insertCoin({ matchmaking:true, maxPlayersPerRoom:4 });   // the handshake, before any game exists
     WSEED = seedFromRoom();          // P1's room decides the world — same code on every client
     coopUpdateHost();
-    try{ if(coopHost()){ for(const k of ['cansDead','dropsGone','crowdGone','crowdPoke','ents','hits','revive']) Playroom.setState(k,{},true); } }catch(e){}   // host wipes any stale world/enemy deltas
+    try{ if(coopHost()){ for(const k of ['cansDead','dropsGone','crowdGone','crowdPoke','ents','hits','revive']) Playroom.setState(k,{},true); Playroom.setState('pvp',null,true); } }catch(e){}   // host wipes any stale world/enemy/duel deltas
     Playroom.onPlayerJoin((state) => {
       if(state.id===Playroom.myPlayer().id) return;                         // skip self
       others.push(state);

@@ -97,7 +97,8 @@ const driver = `
    throwWeapon,drop, get WEAPONS(){return WEAPONS},
    genBoss,spawnBoss,updateBoss,killBoss,enrageBoss,hits,atkBox,startDate,resolveDate,
    buyContinue,callItNight,clutchRevive,continueCost,confFloor,
-   spawnBusMob,updateBusMob, coopApplyHits,coopReportHit,coopGuestBossCombat});
+   spawnBusMob,updateBusMob, coopApplyHits,coopReportHit,coopGuestBossCombat,
+   pvpPunch,pvpTick,duelExitFinish, get pvpDueling(){return dueling}, get pvpPhase(){return duelPhase}});
 ;globalThis.__key=(k,v)=>{ if(v&&!key[k]) pressed[k]=true; key[k]=v; };
 ;globalThis.__tick=(n)=>{ for(let i=0;i<n;i++){ update(); } };
 ;globalThis.__draw=()=>render();
@@ -755,6 +756,47 @@ if(!err){
     g.spawnBoss(1,'lawyer');
     if(g.boss) throw new Error('a ranged archetype (lawyer) spawned in co-op — should be melee-only for now');
 
+    __setMP(false); delete global.Playroom; g.releaseArena();
+  });
+  scene('co-op PvP duel: 3 hits challenges, 3 back accepts, then a real fight to a winner', ()=>{
+    // Same single-process trick as the other co-op scenes: one shared room-state store, and
+    // 'meId' flips which player is throwing the punch. pvpPunch()/pvpTick() only ever touch
+    // Playroom.getState/setState('pvp') and coopMyId() — no per-player state needed here.
+    const room={};
+    let meId='a';
+    global.Playroom={ myPlayer:()=>({id:meId}), getState:k=>room[k], setState:(k,v)=>{room[k]=v;} };
+    const g=__G();
+    __setMP(true);
+    g.releaseArena();
+
+    meId='a'; g.pvpPunch('b'); g.pvpPunch('b'); g.pvpPunch('b');
+    let d=room.pvp;
+    if(!d || d.phase!=='challenge' || d.hitsA!==3) throw new Error('3 hits did not raise a challenge: '+JSON.stringify(d));
+
+    meId='b'; g.pvpPunch('a'); g.pvpPunch('a');
+    d=room.pvp;
+    if(d.phase!=='challenge' || d.hitsB!==2) throw new Error('hitting back did not count toward acceptance: '+JSON.stringify(d));
+    g.pvpPunch('a');   // the 3rd hit back
+    d=room.pvp;
+    if(d.phase!=='active') throw new Error('3 hits back did not accept the duel: '+JSON.stringify(d));
+    if(d.hpA!==100||d.hpB!==100||d.livesA!==3||d.livesB!==3) throw new Error('duel did not reset hp/lives on accept: '+JSON.stringify(d));
+
+    // pvpTick() should pull a participant into the arena the moment the shared state says 'active'
+    meId='a'; g.pvpTick();
+    if(!g.pvpDueling) throw new Error('challenger never entered the duel (dueling still false after active)');
+    if(g.pvpPhase!=='transit-out') throw new Error("expected phase 'transit-out' on entry, got "+g.pvpPhase);
+
+    // the fight: 'a' lands enough hits to take a life off 'b', then finishes the match
+    meId='a';
+    for(let i=0;i<7;i++) g.pvpPunch('b');           // 7 * 15dmg = 105 >= 100hp
+    d=room.pvp;
+    if(d.livesB!==2) throw new Error('a life was not lost at 0 hp: livesB='+d.livesB+' hp='+d.hpB);
+    if(d.hpB!==100) throw new Error('hp did not reset to full after losing a life: '+d.hpB);
+    for(let i=0;i<14;i++) g.pvpPunch('b');          // finish off the remaining 2 lives
+    d=room.pvp;
+    if(d.phase!=='end' || d.winner!=='a') throw new Error('duel did not end with the right winner: '+JSON.stringify(d));
+
+    g.duelExitFinish();   // the real exit path — restores the world arrays duelEnter() swapped out, and clears dueling/duelPhase
     __setMP(false); delete global.Playroom; g.releaseArena();
   });
   scene('co-op: cans + drops sync, and cash pays both players', ()=>{
