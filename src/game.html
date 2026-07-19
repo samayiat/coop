@@ -686,7 +686,8 @@ function genChunk(ci){
     if(club){
       const cn=2+Math.floor(R()*3);
       for(let i=0;i<cn;i++) crowd.push({x:b.doorX+(R()-.5)*b.w*.84, z:FLOOR_N+5+R()*14,
-        ph:R()*9, smoke:R()<.5, hue:b.hue, joinT:0, chunk:ci});
+        ph:R()*9, smoke:R()<.5, hue:b.hue, joinT:0, chunk:ci,
+        id:'cw'+ci+'_'+Math.round(b.doorX)+'_'+i});   // deterministic → same id on every client, so his removal can sync
       npcs.push(Object.assign(mkNpc(b.doorX+(R()-.5)*90, FLOOR_N+6+R()*38),{chunk:ci}));
     }
     x += w + 8 + Math.floor(R()*26);
@@ -931,13 +932,18 @@ function sammich(x,z){ return {k:'sammich',x,z,y:0,vy:0,vx:0,
   flash:0,face:-1,state:'walk',st:0,anim:0,tok:false,hitstun:0,dead:0,cd:rnd(24,70)}; }
 
 // a bystander becomes a real enemy: lit, health bar, walks at you. that's the readable difference.
-function aggro(cw,punched){
-  if(coopGuest()) return;     // host spawns; the guest mirrors the host's enemies
+// Co-op: ONLY the host converts (the vamp arrives on the guest via the ents snapshot), and the
+// bystander's removal is broadcast by id so he leaves the sidewalk on every screen — otherwise
+// the guest keeps rendering a dormant twin standing where the real (synced) enemy spawned.
+function aggro(cw,punched,remote){
   if(cw.gone) return;
+  if(coopGuest()){ if(punched) coopPush('crowdPoke', cw.id); return; }   // ask the host to convert him
   cw.gone=true;
+  coopPush('crowdGone', cw.id);           // off the sidewalk for everyone
   const e=vamp(cw.x,cw.z,false); ents.push(e);
   if(punched){ e.hp-=7; e.flash=10; e.hitstun=14; e.state='stun';
-    hitstop=6; shake=3.5; puff(cw.x,cw.z,42,6,'#ff2e88'); blip(150,.08);
+    if(!remote){ hitstop=6; shake=3.5; blip(150,.08); }   // the puncher's feel — not the host's, if a guest threw it
+    puff(cw.x,cw.z,42,6,'#ff2e88');
     say(cw.x,cw.z,['THE FUCK?','AY!','MY GUY.','NAH.','ON GOD?'][Math.floor(Math.random()*5)],'#ff2e88');
   } else say(cw.x,cw.z,'GET HIM','#ff2e88');
   // his friends saw that
@@ -1008,6 +1014,10 @@ function coopApply(){                                 // pull shared can/drop de
       for(const id in gone){ const g=gone[id];
         if(g && g.m>0 && g.by!==my && !_credited.has(id)){ _credited.add(id); P.money+=g.m; night.cash+=g.m; } }  // money pays both, separately
     }
+    const cgone=Playroom.getState('crowdGone');
+    if(cgone) for(const cw of crowd) if(!cw.gone && cgone[cw.id]) cw.gone=true; // converted to an enemy on the host → off this sidewalk too
+    if(coopHost()){ const pokes=Playroom.getState('crowdPoke');                 // a guest punched a bystander → convert him here
+      if(pokes) for(const cw of crowd) if(!cw.gone && pokes[cw.id]) aggro(cw,true,true); }
   }catch(e){ if(!coopApply._w){ console.error('coop sync:', e.message||e); coopApply._w=true; } }
 }
 
@@ -1040,6 +1050,11 @@ function coopUpdateHost(){
 function coopHost(){ return !MP || _amHost; }
 function coopGuest(){ return MP && !_amHost; }
 function coopMyId(){ try{ return (Playroom.myPlayer()&&Playroom.myPlayer().id)||''; }catch(e){ return ''; } }
+function nearestPlayerDX(x){                     // closest of me + any teammate — the crowd sizes up whoever's near
+  let d=Math.abs(x-P.x);
+  if(MP) try{ for(const o of others){ const p=o&&o.getState('pos'); if(p && !p.down) d=Math.min(d,Math.abs(x-p.x)); } }catch(e){}
+  return d;
+}
 
 const ENT_FIELDS=['id','k','x','z','y','face','state','st','anim','dead','hp','maxhp','w','d','h',
   'skin','elite','big','fire','dmg','flash','hitAnimT','recoil','recoilT','tok','hitstun','enter','plasmaCd'];
@@ -2453,9 +2468,12 @@ function update(){
   const live=ents.filter(e=>!e.dead).length;
   for(const cw of crowd){ cw.ph+=0.03;
     if(cw.blob) continue;
-    // no invitation needed. get within a block and they're already coming.
-    if(!cw.joinT && !boss && Math.abs(cw.x-P.x)<170 && live<11) cw.joinT=Math.floor(rnd(16,120));   // the street stays back during a boss fight
-    if(cw.joinT>0){ cw.joinT--; if(cw.joinT===0){ aggro(cw,false); continue; } }
+    // no invitation needed. get within a block and they're already coming. HOST-only in co-op:
+    // these timers are local randoms, so a guest running them would aggro a different set.
+    if(!coopGuest()){
+      if(!cw.joinT && !boss && nearestPlayerDX(cw.x)<170 && live<11) cw.joinT=Math.floor(rnd(16,120));   // the street stays back during a boss fight
+      if(cw.joinT>0){ cw.joinT--; if(cw.joinT===0){ aggro(cw,false); continue; } }
+    }
     if(!cw.flinch && ents.some(e=>!e.dead&&Math.abs(e.x-cw.x)<60)) cw.flinch=18;
     if(cw.flinch>0) cw.flinch--; }
   crowd=crowd.filter(c=>!c.gone);
@@ -4004,7 +4022,7 @@ async function startCoop(){
     await Playroom.insertCoin({ matchmaking:true, maxPlayersPerRoom:4 });   // the handshake, before any game exists
     WSEED = seedFromRoom();          // P1's room decides the world — same code on every client
     coopUpdateHost();
-    try{ if(coopHost()){ for(const k of ['cansDead','dropsGone','ents','hits','revive']) Playroom.setState(k,{},true); } }catch(e){}   // host wipes any stale world/enemy deltas
+    try{ if(coopHost()){ for(const k of ['cansDead','dropsGone','crowdGone','crowdPoke','ents','hits','revive']) Playroom.setState(k,{},true); } }catch(e){}   // host wipes any stale world/enemy deltas
     Playroom.onPlayerJoin((state) => {
       if(state.id===Playroom.myPlayer().id) return;                         // skip self
       others.push(state);
