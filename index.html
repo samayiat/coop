@@ -1688,11 +1688,12 @@ function genBoss(bn,forceArch){
 }
 
 function spawnBoss(bn,forceArch){
-  // host-only, like every other co-op set piece. The automatic triggers (the 250m timer, the
-  // date "her man") stay explicitly off in co-op at their own call sites — only the dev menu's
-  // BOSS GAUNTLET / SPAWN BOSS buttons reach here in co-op, and only for whoever's hosting.
+  // host-only, like every other co-op set piece: the 250m timer (host's position), the dev
+  // menu buttons, and the gauntlet all come through here. Only the date "her man" trigger
+  // stays off in co-op at its own call site.
   if(coopGuest()) return;
   const b=genBoss(bn,forceArch);
+  if(MP && others.length){ b.maxhp=b.hp=Math.round(b.maxhp*(1+0.5*others.length)); }   // +50% hp per teammate — same idea as the doubled waves
   b.x=clamp(camLock+W*0.72, camLock+60, camLock+W-60); b.z=FLOOR_N+34; b.face=-1;
   for(const e of ents) if(!e.dead){ e.dead=1; e.vx=(e.x<b.x?-1:1)*3; }   // the street clears — scatter any stragglers
   for(const cw of crowd) cw.joinT=0;                          // and nobody new joins in
@@ -2703,7 +2704,11 @@ function update(){
 
   //---- boss every 250m (4000px), else normal gates
   const bn=Math.floor(P.x/4000);
-  if(bn>bossDone && bn>0 && camLock===null && !MP){ bossDone=bn; camLock=Math.max(0,P.x-170); spawnBoss(bn); }   // no bosses in co-op
+  // every 250m the street clears and a boss rises — in co-op the HOST's position drives it,
+  // same as gate waves; the arch is the per-bn weighted-random roll (pickBossArch). A guest
+  // tracks bossDone passively so a mid-run host promotion can't retro-fire an old threshold.
+  if(bn>bossDone && bn>0 && camLock===null && !busMob && !dueling && !coopGuest()){ bossDone=bn; camLock=Math.max(0,P.x-170); spawnBoss(bn); }
+  else if(coopGuest() && bn>bossDone) bossDone=bn;
   for(const g of GATES) if(!g.done && P.x>g.x && P.x-g.x<140 && camLock===null && !coopGuest()){   // host (or solo) triggers the wave; the guest mirrors the enemies
     camLock=Math.max(0,g.x-170); spawnWave(tier()); g.done='fight'; }
   if(!coopGuest() && !dueling && !busMob && !boss && camLock===null && P.x>600 && t>=busMobAt) spawnBusMob();   // the rare tour-bus horde

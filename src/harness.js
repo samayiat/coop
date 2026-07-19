@@ -759,6 +759,23 @@ if(!err){
 
     __setMP(false); delete global.Playroom; g.releaseArena();
   });
+  scene('co-op: the 250m threshold spawns a boss for the host', ()=>{
+    // The auto-trigger was hard-gated !MP ('no bosses in co-op'). Now the HOST's position
+    // drives it, same as gate waves — the guest only tracks bossDone passively.
+    global.Playroom={ myPlayer:()=>({id:'me',setState:()=>{},getState:()=>null}), getState:()=>null, setState:()=>{} };
+    const g=__G();
+    __others().length=0; __setMP(true);
+    g.releaseArena(); g.clearEnts();
+    g.P.x=4150; g.P.z=300;                       // past the first 250m mark (4000px)
+    for(const gt of g.GATES) gt.done=true;       // no gate wave stealing the camLock this tick
+    __tick(1);
+    const b=g.boss, locked=g.camLock!==null;
+    __setMP(false); delete global.Playroom;
+    if(!b) throw new Error('250m threshold did not spawn a boss for the co-op host');
+    if(!locked) throw new Error('boss spawned without locking the arena');
+    console.log('        250m boss in co-op: '+b.arch+' hp '+b.hp);
+    g.releaseArena();
+  });
   scene('co-op guest emitters: fire-rat breath + boss projectiles spawn locally from the mirror', ()=>{
     // The generalized cheat: enemy/boss projectiles are never synced — the guest re-runs each
     // spawn rule off the mirrored (state, move, st) timeline, and _lst (locally-advanced st)
