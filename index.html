@@ -1146,11 +1146,17 @@ function coopMirrorEnts(){                        // guest: rebuild enemies from
         if(p && !s.dead && !(P.grabE===p)){ // snapshots land at 20Hz — ease toward the authoritative spot so motion stays 60fps-smooth
           e.x=px+(s.x-px)*0.4; e.z=pz+(s.z-pz)*0.4; e.y=py+(s.y-py)*0.4; }
         if(P.grabE===p && !s.dead){ e.x=px; e.z=pz; e.y=py; e.state='held'; }   // I'm holding him — pin my local copy through the windup
+        if(p && (p._pinT||0)>0 && !s.dead){                // just hurled him — ride the local arc until the host's toss report lands
+          e._pinT=p._pinT-1; e.state=ps;
+          e.x=px+(e.vx||0); e.y=Math.max(0,py+(e.vy||0)); e.vy=(e.vy||0)-0.3;
+          e.z=Math.min(ROAD_TARGET,pz+2.6); }
         // st advances locally at 60fps between 20Hz snapshots so tick-exact things (projectile
         // emit windows, melee actives) land right; a fresh snapshot re-anchors it via max()
         e._lst = (p && ps===e.state) ? Math.max(e.st, (e._lst!=null?e._lst:e.st)+1) : e.st;
-        // guest-local cosmetics — derived, never synced
-        if(!p){ e.anim=0; e.flash=0; e.hitAnimT=0; e.recoil=0; e.recoilT=0; e.hitstun=0; coopMirrorArrival(e); }
+        // guest-local cosmetics — derived, never synced. Arrival theatre (door pops, callouts)
+        // only after the first full pass — joining mid-fight shouldn't fanfare the whole roster.
+        if(!p){ e.anim=0; e.flash=0; e.hitAnimT=0; e.recoil=0; e.recoilT=0; e.hitstun=0;
+          if(coopMirrorEnts._seeded) coopMirrorArrival(e); }
         else {
           e.anim=(p.anim||0) + Math.min(0.35, Math.hypot(e.x-px,e.z-pz)*0.12 + 0.03);
           e.flash=Math.max(0,(e.flash||0)-1); e.hitAnimT=Math.max(0,(e.hitAnimT||0)-1);
@@ -1199,10 +1205,11 @@ function coopMirrorEnts(){                        // guest: rebuild enemies from
       }
     }
     boss = ents.find(e=>e.k==='boss') || null;        // drawBossBar/drawPhotoFrame/drawBus all read this global directly
+    if(snap) coopMirrorEnts._seeded=true;
     if(!snap && OPT.dev) console.log('[MIRROR] no snapshot from host:', hp?'host exists':'no host');
   }catch(e){ ents.length=0; boss=null; if(OPT.dev) console.error('[MIRROR] error:', e.message); }
 }
-coopMirrorEnts._pl=null;
+coopMirrorEnts._pl=null; coopMirrorEnts._seeded=false;
 let _hitSeq=0; const _hitsApplied=new Set();
 // `toss` (with tx/tz) = "I grab-hurled him into the street at this spot" — the host snaps its
 // authoritative copy there and runs the real thrown→road→splat sim with ITS traffic.
@@ -1491,6 +1498,7 @@ function duelEnter(role){
     ents,crowd,cans,npcs,drops,props,cars,fires,litter,steam};
   ents=[]; crowd=[]; cans=[]; npcs=[]; drops=[]; props=[]; cars=[]; fires=[]; litter=[]; steam=[];
   camLock=null; P.state='walk'; P.y=0; P.vy=0;
+  P.grabbedBy=null; P.grabE=null; P.struggle=0;   // walking into the duel breaks any grab either way — no dangling refs into the saved world
   say(P.x,P.z-40, role==='spectator'?'GOING TO WATCH...':'HEADING INSIDE...', '#ffb545');
 }
 function duelExitFinish(){
@@ -1541,6 +1549,7 @@ let busMob=null, busMobAt=Infinity;
 function spawnBusMob(force){
   if(coopGuest()) return;                 // host (or solo) triggers; guest just watches it arrive
   if(busMob || boss) return;
+  if(dueling) return;                     // the duel emptied the world — a bus arriving now would dump invisible enemies onto the fighters
   if(!force) busMobAt=Infinity;           // the natural roll is one-shot; the dev button leaves it armed so it can be re-fired
   const dir=Math.random()<0.5?1:-1;
   const stopX=camX+W*0.5;
@@ -2179,8 +2188,9 @@ function launchGrabbed(){                                   // the wind-up compl
   const e=P.grabE; if(!e){ P.state='idle'; return; }
   e.state='thrown'; e.hitstun=0; e.tok=false; e.hitDone=true;
   e.vx=P.face*rnd(1.6,2.4); e.vy=4.8; e.y=Math.max(e.y,4);
-  // guest: my copy is a mirror — tell the host to run the real street toss from this spot
-  if(coopGuest() && e.id!=null) coopReportHit(e.id, 0, P.face, false, true, Math.round(e.x), Math.round(e.z));
+  // guest: my copy is a mirror — tell the host to run the real street toss from this spot.
+  // _pinT lets the local arc play through the report's round-trip instead of snapping back.
+  if(coopGuest() && e.id!=null){ e._pinT=12; coopReportHit(e.id, 0, P.face, false, true, Math.round(e.x), Math.round(e.z)); }
   shake=Math.max(shake,6); blip(180,.07); rumble(260,.8,.6,true);
   say(e.x,e.z-34,'INTO TRAFFIC','#ffb545');
   P.grabE=null; P.state='idle'; P.step=0; P.buf=0; P.iframes=Math.max(P.iframes,10);   // brief grace on the release/recovery
@@ -2694,7 +2704,7 @@ function update(){
   if(bn>bossDone && bn>0 && camLock===null && !MP){ bossDone=bn; camLock=Math.max(0,P.x-170); spawnBoss(bn); }   // no bosses in co-op
   for(const g of GATES) if(!g.done && P.x>g.x && P.x-g.x<140 && camLock===null && !coopGuest()){   // host (or solo) triggers the wave; the guest mirrors the enemies
     camLock=Math.max(0,g.x-170); spawnWave(tier()); g.done='fight'; }
-  if(!coopGuest() && !busMob && !boss && camLock===null && P.x>600 && t>=busMobAt) spawnBusMob();   // the rare tour-bus horde
+  if(!coopGuest() && !dueling && !busMob && !boss && camLock===null && P.x>600 && t>=busMobAt) spawnBusMob();   // the rare tour-bus horde
   updateBusMob();
   if(camLock!==null && !OPT.freecam){
     camX+=(camLock-camX)*0.1;
