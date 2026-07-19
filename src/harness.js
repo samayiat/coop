@@ -641,6 +641,18 @@ if(!err){
     __setMP(false); __others().length=0; delete global.Playroom;
     if(threw) throw new Error('render threw with a remote present: '+threw.message);
   });
+  scene('co-op: no enemies spawn over 4000 ticks of walking', ()=>{
+    // co-op is meant to be enemy-free (dev focus on player sync). Walk a long way in MP
+    // and assert nothing hostile spawned — gates, waves, the 250m boss, crowd aggro and
+    // trash-rats must all stay suppressed. Enemies here = the session isn't really in MP.
+    const g=__G();
+    global.Playroom={ myPlayer:()=>({ id:'me', setState:()=>{}, getState:()=>null }) };
+    __others().length=0; __setMP(true); g.clearEnts();
+    __key('KeyD',true); for(let i=0;i<4000;i++){ __tick(1); } __key('KeyD',false);
+    const spawned=g.ents.length;
+    __setMP(false); delete global.Playroom; g.clearEnts();
+    if(spawned) throw new Error(spawned+' entities spawned in co-op (expected 0)');
+  });
   const g2=__G();
   console.log('\nend state: x='+Math.round(g2.P.x)+'  block '+(g2.tier()+1)+
     '  ents '+g2.ents.length+'  buildings '+g2.BUILDINGS.length+

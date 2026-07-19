@@ -925,6 +925,7 @@ function sammich(x,z){ return {k:'sammich',x,z,y:0,vy:0,vx:0,
 
 // a bystander becomes a real enemy: lit, health bar, walks at you. that's the readable difference.
 function aggro(cw,punched){
+  if(MP) return;              // co-op is enemy-free right now (dev: focus on player sync)
   if(cw.gone) return;
   cw.gone=true;
   const e=vamp(cw.x,cw.z,false); ents.push(e);
@@ -960,6 +961,7 @@ function puff(x,z,y,n,col){ for(let i=0;i<n;i++) parts.push({x,z,y,vx:rnd(-2,2),
 function say(x,z,txt,col){ floats.push({x,z,y:78,txt,col:col||'#fff',life:60}); }
 
 function spawnWave(T){
+  if(MP) return;             // no waves in co-op (dev: focus on player sync)
   const near=CLUBS.filter(b=>Math.abs(b.doorX-P.x)<W*0.9);
   const pick=()=> near.length?near[Math.floor(Math.random()*near.length)]:CLUBS[0];
   const grates=GRATES.filter(g=>Math.abs(g.x-camX-W/2)<W*0.7);
@@ -2046,7 +2048,7 @@ function update(){
 
   //---- boss every 250m (4000px), else normal gates
   const bn=Math.floor(P.x/4000);
-  if(bn>bossDone && bn>0 && camLock===null){ bossDone=bn; camLock=Math.max(0,P.x-170); spawnBoss(bn); }
+  if(bn>bossDone && bn>0 && camLock===null && !MP){ bossDone=bn; camLock=Math.max(0,P.x-170); spawnBoss(bn); }   // no bosses in co-op
   for(const g of GATES) if(!g.done && P.x>g.x && P.x-g.x<140 && camLock===null && !MP){   // skip gates in co-op (dev: focus on player sync)
     console.log("GATE TRIGGERED! x=", g.x, "tier=", tier(), "GATES.length=", GATES.length);
     camLock=Math.max(0,g.x-170); spawnWave(tier()); g.done='fight'; }
@@ -2171,7 +2173,7 @@ function update(){
       if(Math.abs(b.x-c.x)<(c.w||11)+18&&Math.abs(b.z-c.z)<20){ c.hp--; c.shake=6; shake=2; blip(140,.05);
         if(c.hp<=0){ c.dead=true; puff(c.x,c.z,20,c.type==='dumpster'?16:10,'#6b6478'); const r=Math.random();
           const trash = c.type==='can'||c.type==='dumpster';        // rats nest in the trash, not the crates
-          if(r<0.34 && trash){ for(let i=0;i<(c.type==='dumpster'?4:3);i++) ents.push(rat(c.x+rnd(-10,10),c.z)); say(c.x,c.z,'RATS','#7d7791'); }
+          if(r<0.34 && trash && !MP){ for(let i=0;i<(c.type==='dumpster'?4:3);i++) ents.push(rat(c.x+rnd(-10,10),c.z)); say(c.x,c.z,'RATS','#7d7791'); }   // no rats in co-op — falls through to loot
           else if(WEAPONS_ON && r<0.60){ const wt = trash?'bottle':'pipe'; drop(c.x,c.z,'weapon',wt); say(c.x,c.z,WEAPONS[wt].name+'!','#ffb545'); }   // ~26% a street weapon (parked — see WEAPONS_ON)
           else if(r<0.88) drop(c.x,c.z,'cash'); else drop(c.x,c.z,'jameson');   // mostly cash — bottles are rarer now
           if(c.type==='dumpster') drop(c.x+rnd(-10,10),c.z,'cash'); } } } }   // dumpsters pay out extra
@@ -3414,6 +3416,14 @@ function hud(){
   ctx.textAlign='left';
   const BX=10, BY=8, BOX=30, LX=BX+BOX+5, BW=124;
   portrait(BX,BY,BOX);
+
+  // co-op status, top-right. Present ONLY in co-op, so if you picked CO-OP and see nothing
+  // here (and enemies are spawning), the session fell back to solo instead of connecting.
+  if(MP){ ctx.save(); ctx.textAlign='right'; ctx.font='bold 8px "JetBrains Mono",monospace';
+    const live = typeof Playroom!=="undefined" && Playroom.myPlayer();
+    ctx.fillStyle = live ? '#3ad1ff' : '#ff2e88';
+    ctx.fillText('CO-OP'+(live?' · '+(others.length+1)+'P':' · connecting…'), W-10, 14);
+    ctx.restore(); ctx.textAlign='left'; }
 
   ctx.font='7px "JetBrains Mono",monospace';
   // health, segmented so you can count what's left
