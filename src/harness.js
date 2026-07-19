@@ -749,6 +749,12 @@ if(!err){
     g.coopApplyHits();
     if(hostBoss.state!=='dead') throw new Error('a killing guest hit did not route through killBoss (state='+hostBoss.state+')');
 
+    // ranged archetypes throw projectiles (fires[]) or check the host's own remembered position
+    // (tourist's photo) — neither reaches a guest, so they're off in co-op for now
+    g.releaseArena();
+    g.spawnBoss(1,'lawyer');
+    if(g.boss) throw new Error('a ranged archetype (lawyer) spawned in co-op — should be melee-only for now');
+
     __setMP(false); delete global.Playroom; g.releaseArena();
   });
   scene('co-op: cans + drops sync, and cash pays both players', ()=>{

@@ -1311,6 +1311,10 @@ function drawBusMob(){
 // every 250m the street clears and a giant procedural monster rises. three archetypes,
 // each rolled fresh from the boss number so no two encounters are the same.
 const BOSS_ARCH=['ratking','bouncer','crawler','deli','subway','halal','auteur','tourist','lawyer'];
+// co-op only supports melee bosses for now — the rest throw projectiles (fires[]) or check a
+// remembered snapshot of the HOST's own position (tourist's photo), neither of which reaches
+// or hits a guest. Bouncer and crawler are the only archetypes with no such attack.
+const MELEE_BOSS_ARCH=['bouncer','crawler'];
 const BOSS_NAME={ratking:'THE RAT KING',bouncer:'THE BOUNCER',crawler:'THE CRAWLER',deli:'THE DELI MAN',
   subway:'THE TRACK WORKER',halal:'THE CART MAN',auteur:'THE AUTEUR',tourist:'THE TOURIST',lawyer:'THE LAWYER'};
 const BOSS_PAL={
@@ -1390,6 +1394,8 @@ function spawnBoss(bn,forceArch){
   // date "her man") stay explicitly off in co-op at their own call sites — only the dev menu's
   // BOSS GAUNTLET / SPAWN BOSS buttons reach here in co-op, and only for whoever's hosting.
   if(coopGuest()) return;
+  if(MP && forceArch && !MELEE_BOSS_ARCH.includes(forceArch)){   // ranged bosses are off in co-op for now (see MELEE_BOSS_ARCH)
+    say(P.x,P.z-40,'RANGED BOSSES: SOLO ONLY (FOR NOW)','#ff2e88'); return; }
   const b=genBoss(bn,forceArch);
   b.x=clamp(camLock+W*0.72, camLock+60, camLock+W-60); b.z=FLOOR_N+34; b.face=-1;
   for(const e of ents) if(!e.dead){ e.dead=1; e.vx=(e.x<b.x?-1:1)*3; }   // the street clears — scatter any stragglers
@@ -1417,7 +1423,8 @@ function forceBoss(){
   if(camLock!==null || boss) return;
   gauntletIx++;
   camLock=Math.max(0,P.x-170);
-  spawnBoss(gauntletIx, BOSS_ARCH[(gauntletIx-1)%BOSS_ARCH.length]);
+  const roster = MP ? MELEE_BOSS_ARCH : BOSS_ARCH;   // co-op gauntlet only cycles the melee-safe archetypes
+  spawnBoss(gauntletIx, roster[(gauntletIx-1)%roster.length]);
 }
 // dev: jump straight to a specific archetype, clearing whatever's up
 function devBoss(arch){
