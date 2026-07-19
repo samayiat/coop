@@ -2186,6 +2186,7 @@ function dropGrab(stun){                                    // let go without to
 }
 function launchGrabbed(){                                   // the wind-up completed — HURL them into the street
   const e=P.grabE; if(!e){ P.state='idle'; return; }
+  P.tossT=10;                                               // the follow-through kick frames (drawPlayer)
   e.state='thrown'; e.hitstun=0; e.tok=false; e.hitDone=true;
   e.vx=P.face*rnd(1.6,2.4); e.vy=4.8; e.y=Math.max(e.y,4);
   // guest: my copy is a mirror — tell the host to run the real street toss from this spot.
@@ -2693,6 +2694,7 @@ function update(){
   if(P.iframes>0)P.iframes--;
   if(P.grabImmune>0)P.grabImmune--;              // brief window where you can't be re-grabbed (no chain-grab lock)
   if(P.hitFlash>0)P.hitFlash--;
+  if(P.tossT>0)P.tossT--;
   for(const e of ents){ if(e.flash>0) e.flash--; if(e.recoilT>0) e.recoilT--; if(e.hitAnimT>0) e.hitAnimT--; }
   if(P.dmgT>0){ P.dmgT--; if(!P.dmgT)P.dmgMul=1; }
   if(P.fireT>0){ P.fireT--; if(!P.fireT) say(P.x,P.z-20,'burned out','#5c5670'); }
@@ -3887,6 +3889,18 @@ function drawSammich(e){ const sx=e.x-camX, y=e.z-e.y, bob=Math.sin(e.anim*2)*1.
   if(e.hp<e.maxhp && !e.dead) ebar(e,18,y-40+bob);
 }
 
+// movement direction → one of the 8 drawn rotation frames (screen z grows southward)
+function octName(dx,dz){
+  const a=Math.atan2(dz,dx)*180/Math.PI;
+  if(a>=-22.5&&a<22.5) return 'east';
+  if(a>=22.5&&a<67.5) return 'south-east';
+  if(a>=67.5&&a<112.5) return 'south';
+  if(a>=112.5&&a<157.5) return 'south-west';
+  if(a>=157.5||a<-157.5) return 'west';
+  if(a>=-157.5&&a<-112.5) return 'north-west';
+  if(a>=-112.5&&a<-67.5) return 'north';
+  return 'north-east';
+}
 function drawVamp(e){ const sx=e.x-camX;
   const isDarnell = e.skin==='darnell';
   // Darnell's "built different" roll doubles as his dark/evil form (shade.*) — same
@@ -3897,33 +3911,45 @@ function drawVamp(e){ const sx=e.x-camX;
   // no lay-down frame, so a regular hit and actual death don't end up looking like the
   // same "on the ground" moment twice.
   const hasRealHit = dark ? false : (isDarnell ? IDX['darnell.hit.0'] : false);
-  let key;
+  // rot.* frames are REAL drawn directions — never mirror them. Mirroring is only for the
+  // west-sourced animation sheets (walk/kick/punch/haymaker/knockback). Applying the sheet
+  // mirror to a directional frame double-flips it — that was the backwards dark form.
+  let key, noFlip=false;
   if(dark){
-    key='shade.rot.'+(e.face>0?'east':'west');
-    // west-sourced haymaker, mirrored for east same as every other combat sheet —
-    // fixed from the earlier south-only workaround now that real west frames exist.
+    // it hovers in any direction and all 8 rotations exist — face the actual movement,
+    // smoothed with a dead-zone so it doesn't twitch while drifting in place
+    const mdx=e.x-(e._ox!==undefined?e._ox:e.x), mdz=e.z-(e._oz!==undefined?e._oz:e.z);
+    e._ox=e.x; e._oz=e.z;
+    e._fvx=(e._fvx||0)*0.8+mdx*0.2; e._fvz=(e._fvz||0)*0.8+mdz*0.2;
+    if(Math.hypot(e._fvx,e._fvz)>0.12) e._oct=octName(e._fvx,e._fvz);
+    key='shade.rot.'+(e._oct||(e.face>0?'east':'west')); noFlip=true;
+    // west-sourced haymaker, mirrored for east same as every other combat sheet.
     // ATK only — launch used to show this too, which looked like it was still punching
     // while flying backward from a heavy hit.
     if(e.state==='atk'){
       const fi=clamp(Math.floor(e.st/6),0,6);
-      key = IDX[`shade.haymaker.${fi}`] || key;
+      if(IDX[`shade.haymaker.${fi}`]){ key=`shade.haymaker.${fi}`; noFlip=false; }
     }
-    if(e.dead) key='shade.rot.south';
+    if(e.state==='enter'){ key='shade.rot.south'; noFlip=true; }
+    if(e.dead){ key='shade.rot.south'; noFlip=true; }
   } else if(isDarnell){
-    key = IDX['darnell.walk.0'] ? 'darnell.walk.'+(Math.floor(e.anim)%6) : 'darnell.rot.'+(e.face>0?'east':'west');
+    if(IDX['darnell.walk.0']) key='darnell.walk.'+(Math.floor(e.anim)%6);
+    else { key='darnell.rot.'+(e.face>0?'east':'west'); noFlip=true; }
     // one punch only — the haymaker (7 frames: big wind-up through the connect)
     if(e.state==='atk') key = IDX['darnell.punch.0'] ? 'darnell.punch.'+clamp(Math.floor(e.st/6),0,6) : key;
     if(e.state==='stun') key = hasRealHit ? 'darnell.hit.'+clamp(Math.floor((15-(e.hitAnimT||0))/2),0,6) : key;
     if(e.state==='launch') key = IDX['darnell.knockback.0'] ? 'darnell.knockback.'+clamp(Math.floor(e.st/3),0,6) : key;
-    if(e.dead) key='darnell.rot.south';
+    if(e.state==='enter'){ key='darnell.rot.south'; noFlip=true; }   // stepping out of the door, toward the street
+    if(e.dead){ key='darnell.rot.south'; noFlip=true; }
   } else {
     key='vamp.walk.'+(Math.floor(e.anim)%4);
     if(e.state==='atk') key='vamp.kick.'+Math.min(3,Math.floor(e.st/9));
-    if(e.state==='stun') key='vamp.rot.'+(e.face>0?'east':'west');
+    if(e.state==='stun'){ key='vamp.rot.'+(e.face>0?'east':'west'); noFlip=true; }   // real directional frame — no double flip
     if(e.state==='launch') key='vamp.kick.1';
-    if(e.dead) key='vamp.rot.south';
+    if(e.state==='enter'){ key='vamp.rot.south'; noFlip=true; }      // stepping out of the door, toward the street
+    if(e.dead){ key='vamp.rot.south'; noFlip=true; }
   }
-  const f = e.face>0?-1:1;                       // walk/punch/knockback sheets are all west-sourced, mirrored for east
+  const f = noFlip ? 1 : (e.face>0?-1:1);        // west-sourced sheets mirror for east; rot frames never do
   const spin = e.state==='launch'||e.dead;
   // the dark form doesn't walk — it hovers. shadow stays pinned to the ground while
   // the sprite bobs a few px above it; phase offset by x so a pack of them don't sync.
@@ -4045,9 +4071,19 @@ function drawPlayer(){
     return;
   }
   shadow(P.x,P.z,16-P.y*0.06);
+  // smoothed movement delta — used to pick the south-facing walk sheet when he's
+  // mostly heading down-screen (hero.walkS: 4 toward-camera frames, previously unused)
+  const _dx=P.x-(drawPlayer._px!==undefined?drawPlayer._px:P.x), _dz=P.z-(drawPlayer._pz!==undefined?drawPlayer._pz:P.z);
+  drawPlayer._px=P.x; drawPlayer._pz=P.z;
+  drawPlayer._vx=(drawPlayer._vx||0)*0.8+_dx*0.2; drawPlayer._vz=(drawPlayer._vz||0)*0.8+_dz*0.2;
   let key='hero.rot.east';
   if(P.state==='walk') key='hero.walk.'+(Math.floor(t*.16)%6);
+  if(P.state==='walk' && drawPlayer._vz>0.4 && Math.abs(drawPlayer._vz)>Math.abs(drawPlayer._vx)*1.15 && IDX['hero.walkS.0'])
+    key='hero.walkS.'+(Math.floor(t*.16)%4);
   if(P.state==='idle') key= P.drunk>60?'hero.swag.'+(Math.floor(t*.09)%8):'hero.rot.east';
+  if(P.state==='grab') key= IDX['hero.kick.0'] ? 'hero.kick.'+clamp(Math.floor((P.grabT||0)/17),0,2)   // winding up the toss — leg loading
+                                                : 'hero.rot.east';
+  if(P.tossT>0 && IDX['hero.kick.3']) key='hero.kick.'+clamp(3+Math.floor((10-P.tossT)/4),3,5);        // the hurl — kick follows through
   if(P.state==='jump') key='hero.jump.'+clamp(Math.floor(P.airT/4.4),0,7);
   if(P.state==='drink') key='hero.drink.'+clamp(Math.floor(P.st/6),0,5);
   if(P.state==='air') key= IDX['hero.uppercut.0'] ? 'hero.uppercut.'+clamp(Math.floor(P.st/4),0,5)   // dive attack: rising uppercut
@@ -4132,6 +4168,14 @@ function drawRemotePlayer(o, pos, idx){
   let key = 'hero.rot.east';
   switch(pos.state){
     case 'walk':  key='hero.walk.'+(Math.floor(t*0.16)%6); break;
+  }
+  if(pos.state==='walk'){                        // teammate heading down-screen → the toward-camera walk sheet
+    const dz=pos.z-(o._rpz!==undefined?o._rpz:pos.z);
+    o._rvz=(o._rvz||0)*0.8+dz*0.2;
+    if(o._rvz>0.4 && IDX['hero.walkS.0']) key='hero.walkS.'+(Math.floor(t*0.16)%4);
+  }
+  o._rpz=pos.z;
+  switch(pos.state){
     case 'air':
     case 'jump':  key='hero.jump.'+clamp(Math.floor(pos.y/4.4),0,7); break;
     case 'drink': key='hero.drink.'+(Math.floor(t*0.16)%6); break;
