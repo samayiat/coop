@@ -2172,8 +2172,7 @@ function update(){
   //---- boss every 250m (4000px), else normal gates
   const bn=Math.floor(P.x/4000);
   if(bn>bossDone && bn>0 && camLock===null && !MP){ bossDone=bn; camLock=Math.max(0,P.x-170); spawnBoss(bn); }   // no bosses in co-op
-  for(const g of GATES) if(!g.done && P.x>g.x && P.x-g.x<140 && camLock===null && !MP){   // skip gates in co-op (dev: focus on player sync)
-    console.log("GATE TRIGGERED! x=", g.x, "tier=", tier(), "GATES.length=", GATES.length);
+  for(const g of GATES) if(!g.done && P.x>g.x && P.x-g.x<140 && camLock===null && !coopGuest()){   // host (or solo) triggers the wave; the guest mirrors the enemies
     camLock=Math.max(0,g.x-170); spawnWave(tier()); g.done='fight'; }
   if(camLock!==null && !OPT.freecam){
     camX+=(camLock-camX)*0.1;
