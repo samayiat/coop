@@ -1223,10 +1223,11 @@ function updateBusMob(){
         bm.x=bm.stopX; bm.phase='stopped'; bm.st=0; bm.stopTicks=90+bm.total*9;
         shake=Math.max(shake,6); rumble(340,.6,.6,true); say(bm.x,FLOOR_S+8,"THEY'RE HERE",'#ff2e88');
         for(let i=0;i<bm.total;i++){
-          const isRat=i%3!==0;                              // ~2 in 3 rats — a swarm, not thirty brawlers
           setTimeout(()=>{ if(paused||busMob!==bm) return;
             const x=bm.x+rnd(-70,70), z=rnd(FLOOR_N+10,FLOOR_S-6);
-            const e=isRat?rat(x,z):vamp(x,z); e.flash=12; ents.push(e); puff(x,z,20,5,'#6b6478');
+            // straight off the tour bus, no rats — Darnell mixed in alongside the vamps, same odds as a wave
+            const spawn=(IDX['darnell.rot.south'] && Math.random()<0.35) ? darnell : vamp;
+            const e=spawn(x,z); e.flash=12; ents.push(e); puff(x,z,20,5,'#6b6478');
           }, 260+i*140);
         }
       }

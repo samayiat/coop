@@ -169,8 +169,9 @@ if(!err){
     let ticks=0;
     while(g.busMob && g.busMob.phase==='arrive' && ticks<200){ g.updateBusMob(); ticks++; }
     if(!g.busMob || g.busMob.phase!=='stopped') throw new Error('bus never reached its stop, phase='+(g.busMob&&g.busMob.phase));
-    const dropped=g.ents.filter(e=>e.k==='rat'||e.k==='vamp').length;
+    const dropped=g.ents.filter(e=>e.k==='vamp').length;   // vamps + Darnells only, both ride the 'vamp' entity type — no rats off this bus
     if(dropped<20) throw new Error('bus mob dropped too few enemies: '+dropped);
+    if(g.ents.some(e=>e.k==='rat')) throw new Error('bus mob spawned a rat — should be vamps/Darnells only');
     console.log('        bus stopped and dropped '+dropped+' enemies');
     while(g.busMob && ticks<3000){ g.updateBusMob(); ticks++; }
     if(g.busMob) throw new Error('bus never left after '+ticks+' ticks');
