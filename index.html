@@ -1078,7 +1078,7 @@ function nearestPlayerDX(x){                     // closest of me + any teammate
 // they're just per-frame decays/advances, and syncing them at the 20Hz snapshot rate is both
 // wasted payload (~30% of the blob) and the reason guest animations stepped instead of flowed.
 const ENT_FIELDS=['id','k','x','z','y','face','state','st','dead','hp','maxhp','w','d','h',
-  'skin','elite','big','fire','dmg','enter','plasmaCd'];
+  'skin','elite','big','fire','dmg','enter','plasmaCd','splat'];
 // bosses carry archetype-specific state on top (pal/name/moves are NOT here — static per arch,
 // the guest looks them up from BOSS_PAL/NAME/MOVES). 'photo' is deliberately absent: the guest
 // computes its OWN photo frame so the tourist photographs where the GUEST is standing.
@@ -1111,7 +1111,8 @@ function coopBroadcastEnts(){
         if(typeof v==='number') v=Math.round(v*100)/100;   // finer precision — sc/rise are small fractions
         s[f]=v; }
       o[e.id]=s; }
-    o._camLock=camLock;   // reserved key — entId() always starts with 'e', so this can't collide with an enemy id
+    o._camLock=camLock;   // reserved keys ('_'-prefixed) — entId() always starts with 'e', so no collision
+    o._bus = busMob ? {x:Math.round(busMob.x),dir:busMob.dir,phase:busMob.phase,lane:busMob.lane,st:busMob.st|0} : 0;
     Playroom.myPlayer().setState('ents', o, true);
     if(OPT.dev) console.log('[BROADCAST] host sent', Object.keys(o).length, 'enemies (reliable)');
   }catch(e){ if(OPT.dev) console.error('[BROADCAST] error:', e.message); }
@@ -1137,7 +1138,7 @@ function coopMirrorEnts(){                        // guest: rebuild enemies from
     ents.length=0;
     if(snap){
       for(const k in snap){
-        if(k==='_camLock') continue;                // reserved, not an entity
+        if(k[0]==='_') continue;                    // reserved keys ride the same object, not entities
         const s=snap[k]; if(!s) continue;
         const p=prev[s.id], px=p?p.x:0, pz=p?p.z:0, py=p?p.y:0;
         const ps=p?p.state:null, php=p?p._hpSeen:null, pWasDead=p?p._wasDead:false;
@@ -1157,10 +1158,34 @@ function coopMirrorEnts(){                        // guest: rebuild enemies from
           if(php!=null && s.hp<php){ e.flash=8; e.hitAnimT=10; e.recoil=3; e.recoilT=6; }   // somebody tagged him — flinch
         }
         e._hpSeen=s.hp;
+        if(e.k==='vamp') e.sc=(e.elite?1.16:1)*(e.big?1.5:1);   // scale was never synced — derive it, or elites render normal-size
         if(e.k==='boss'){ e.pal=BOSS_PAL[e.arch]; e.name=BOSS_NAME[e.arch]; e.moves=BOSS_MOVES[e.arch];
-          if(s.dead && !pWasDead && p) night.bosses++;   // my recap counts the kill too
-          e._wasDead=!!s.dead; }
+          if(p && s.enraged && !e._enrSeen){       // the second wind fires on my screen too
+            shake=Math.max(shake,15); say(e.x,e.z-92,'NOT GOING LIKE THAT','#ff2a2a'); blip(110,.16);
+            for(let i=0;i<20;i++) puff(e.x+rnd(-30,30), e.z, rnd(0,e.h), 1, '#ff2a2a'); }
+          e._enrSeen=!!s.enraged; }
+        if(s.dead && p && !pWasDead){               // death edge — the host killed it, I do the theatre
+          if(e.k==='boss'){ night.bosses++; fires=fires.filter(f=>!f.foe); shake=Math.max(shake,8); }   // his last shots die with him here too
+          if(s.splat){ night.traffic=(night.traffic||0)+1;
+            shake=Math.max(shake,10); say(e.x,e.z-28,'ROADKILL','#ff2e88'); blip(300,.06);
+            for(let i=0;i<22;i++) puff(e.x+rnd(-18,18), e.z-rnd(0,10), rnd(0,18), 1, i%3?'#8b1a2b':'#e8e2d4');
+            splatLoot(e);                           // deterministic per id → the same shared (nid-tagged) drops the host spawned
+            // the car that did it only exists in the host's traffic — spawn a local one driving
+            // through the corpse so the kill reads on this screen (set dressing, zero sync)
+            const dir=Math.random()<0.5?1:-1;
+            cars.push({x:e.x-dir*260, dir, spd:9.5*dir, col:'#8b1a2b', lane:e.z>340?348:334, len:96, horn:false, honked:true});
+          }
+        }
+        e._wasDead=!!s.dead;
         ents.push(e);
+      }
+      // the tour bus rides the same snapshot — no channel of its own (see coopBroadcastEnts)
+      const nb=snap._bus;
+      if(!nb){ if(busMob && busMob._m) busMob=null; }
+      else {
+        if(!busMob){ busMob=Object.assign({_m:1},nb); say(P.x,P.z-50,'TOUR BUS INCOMING','#ffd23a'); blip(220,.06); }
+        else { if(busMob.phase==='arrive' && nb.phase==='stopped'){ shake=Math.max(shake,6); say(nb.x,FLOOR_S+8,"THEY'RE HERE",'#ff2e88'); }
+          busMob.x+=(nb.x-busMob.x)*0.4; busMob.dir=nb.dir; busMob.phase=nb.phase; busMob.lane=nb.lane; busMob.st=nb.st; }
       }
       if('_camLock' in snap){
         const nl=snap._camLock;
@@ -1524,7 +1549,7 @@ function spawnBusMob(force){
   say(P.x,P.z-50,'TOUR BUS INCOMING','#ffd23a'); blip(220,.06);
 }
 function updateBusMob(){
-  if(coopGuest()){ coopMirrorBus(); return; }
+  if(coopGuest()) return;      // the guest's bus arrives via the ents snapshot (_bus), not simulation
   const bm=busMob;
   if(bm){
     if(bm.phase==='arrive'){
@@ -1542,26 +1567,13 @@ function updateBusMob(){
         }
       }
     } else if(bm.phase==='stopped'){
-      if(++bm.st>bm.stopTicks) bm.phase='leave';
+      // stopTicks fallback: a promoted host (handoff mid-event) inherited a mirrored bus without it
+      if(++bm.st>(bm.stopTicks||330)) bm.phase='leave';
     } else if(bm.phase==='leave'){
       bm.x+=bm.dir*10;
       if(bm.x<camX-340||bm.x>camX+W+340) busMob=null;
     }
   }
-  // always on schedule, active or not — a bus that just left must broadcast its own absence,
-  // not rely on landing exactly on a throttled tick while non-null
-  if(MP && t%3===0) coopBroadcastBus();
-}
-function coopBroadcastBus(){
-  try{ Playroom.myPlayer().setState('bus', busMob?{x:busMob.x,dir:busMob.dir,phase:busMob.phase,lane:busMob.lane}:null, true); }catch(e){}
-}
-function coopMirrorBus(){
-  try{
-    const hp=coopHostPlayer(); const snap=hp&&hp.getState('bus');
-    if(!snap){ busMob=null; return; }
-    if(!busMob) busMob=Object.assign({},snap);
-    else{ busMob.x+=(snap.x-busMob.x)*0.4; busMob.dir=snap.dir; busMob.phase=snap.phase; busMob.lane=snap.lane; }
-  }catch(e){ busMob=null; }
 }
 function drawBusMob(){
   const bm=busMob; if(!bm) return;
@@ -2188,13 +2200,23 @@ function tossPlayerToStreet(fromX){
   P.drunk=Math.max(0,P.drunk-S_HEAVY); P.grabbedBy=null; P.struggle=0; P.grabImmune=150;
   shake=12; hitstop=8; rumble(460,1,.8,true); say(P.x,P.z-40,'TOSSED','#ff2e88');
 }
+// splat loot is deterministic per enemy id and tagged with shared nids, so the guest's mirror
+// (which spawns it independently off the death edge) produces the SAME drops the host did —
+// pickup then flows through the normal dropsGone channel like any world loot.
+function splatLoot(e){
+  let h=0; const id=String(e.id||''); for(let i=0;i<id.length;i++) h=(h*31+id.charCodeAt(i))|0;
+  let s=0; const R=()=>hsh((h%9973)*0.013 + (s++)*2.9 + 5.3);
+  const loot=e.big?4:e.elite?3:2;
+  for(let i=0;i<loot;i++){ drop(e.x+(R()-.5)*44, FLOOR_S-4, 'cash');   // payoff lands back on the sidewalk
+    if(MP) drops[drops.length-1].nid=id+'_s'+i; }
+  tooth(e.x, FLOOR_S-4);
+  if(MP) drops[drops.length-1].nid=id+'_t';
+}
 function splatInTraffic(e,c){                               // a car finds a body in the road
   e.dead=1; e.splat=1; e.vx=Math.sign(c.spd||1)*Math.min(9,Math.abs(c.spd)); e.vy=0; e.y=0;
   c.honked=true; blip(300,.06); shake=13; hitstop=Math.max(hitstop,11); rumble(520,1,1,true);
   for(let i=0;i<22;i++) puff(e.x+rnd(-18,18), e.z-rnd(0,10), rnd(0,18), 1, i%3?'#8b1a2b':'#e8e2d4');
-  const loot=e.big?4:e.elite?3:2;
-  for(let i=0;i<loot;i++) drop(e.x+rnd(-22,22), FLOOR_S-4, 'cash');   // payoff lands back on the sidewalk
-  tooth(e.x, FLOOR_S-4);
+  splatLoot(e);
   P.conf=Math.min(100,P.conf+(e.big?12:e.elite?9:6));
   night.traffic=(night.traffic||0)+1;
   say(e.x,e.z-28,'ROADKILL','#ff2e88');

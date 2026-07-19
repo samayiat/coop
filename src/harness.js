@@ -701,7 +701,7 @@ if(!err){
     __setMP(true);
     g.clearEnts(); g.spawn(g.vamp(500,306,false)); g.spawn(g.rat(560,310));
     g.coopBroadcastEnts();
-    const entKeys = s.ents ? Object.keys(s.ents).filter(k=>k!=='_camLock') : [];   // _camLock rides the same object, reserved
+    const entKeys = s.ents ? Object.keys(s.ents).filter(k=>k[0]!=='_') : [];   // '_'-prefixed keys (camLock, bus) ride along, reserved
     const ok = s.ents && !Array.isArray(s.ents) && entKeys.length===2;
     g.clearEnts(); g.coopMirrorEnts();
     const n=g.ents.length;
@@ -791,6 +791,32 @@ if(!err){
     console.log('        guest spawned '+flames+' rat flames + '+g.fires.length+' ratking fires, all locally');
 
     __setMP(false); __others().length=0; delete global.Playroom; g.releaseArena();
+  });
+  scene('co-op splat parity: guest derives roadkill loot (shared nids) off the death edge', ()=>{
+    // A traffic splat only ever runs on the host (it owns the street sim), so the guest watches
+    // the enemy's dead+splat flags flip in the snapshot and spawns the SAME deterministic,
+    // nid-tagged loot locally — pickup then flows through the normal dropsGone channel.
+    const s={};
+    const hostP={ id:'aaa', getState:k=>s[k], setState:()=>{}, onQuit:()=>{} };
+    global.Playroom={ myPlayer:()=>({id:'zzz', setState:()=>{}, getState:()=>null}), getState:()=>null, setState:()=>{} };
+    const g=__G();
+    __others().length=0; __others().push(hostP);
+    __setMP(true); g.coopUpdateHost();
+    g.releaseArena(); g.drops.length=0;
+    const v={id:'sv1',k:'vamp',x:g.P.x+200,z:306,y:0,face:-1,state:'walk',st:0,dead:0,hp:38,maxhp:38,
+             w:26,d:10,h:74,elite:true,big:false,dmg:9,enter:0,plasmaCd:0,splat:0};
+    s.ents={sv1:v, _camLock:null};
+    g.coopMirrorEnts();                              // seen alive first — the edge needs a before
+    s.ents={sv1:Object.assign({},v,{dead:1,splat:1,hp:0}), _camLock:null};
+    g.coopMirrorEnts();                              // dead+splat lands → theatre + loot
+    const nids=g.drops.filter(d=>d.nid).map(d=>d.nid);
+    if(!nids.length) throw new Error('guest spawned no nid-tagged splat loot on the death edge');
+    if(!nids.includes('sv1_s0') || !nids.includes('sv1_t')) throw new Error('splat loot nids not deterministic per id: '+nids.join(','));
+    const before=g.drops.length;
+    g.coopMirrorEnts();                              // still dead in later snapshots → no re-spawn
+    if(g.drops.length!==before) throw new Error('splat loot spawned again on a non-edge frame');
+    console.log('        guest derived '+nids.length+' shared drops: '+nids.join(', '));
+    __setMP(false); __others().length=0; delete global.Playroom; g.releaseArena(); g.drops.length=0;
   });
   scene('co-op PvP duel: 3 hits challenges, 3 back accepts, then a real fight to a winner', ()=>{
     // Same single-process trick as the other co-op scenes: one shared room-state store, and
