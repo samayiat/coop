@@ -1017,9 +1017,14 @@ function coopApply(){                                 // pull shared can/drop de
         if(g && g.m>0 && g.by!==my && !_credited.has(id)){ _credited.add(id); P.money+=g.m; night.cash+=g.m; } }  // money pays both, separately
     }
     const cgone=Playroom.getState('crowdGone');
-    if(cgone) for(const cw of crowd) if(!cw.gone && cgone[cw.id]) cw.gone=true; // converted to an enemy on the host → off this sidewalk too
+    if(cgone) for(const cw of crowd) if(!cw.gone && cgone[cw.id]){ cw.gone=true;   // converted to an enemy on the host → off this sidewalk too
+      say(cw.x,cw.z,'GET HIM','#ff2e88'); }                                        // …with the same call-out the host's screen got
     if(coopHost()){ const pokes=Playroom.getState('crowdPoke');                 // a guest punched a bystander → convert him here
-      if(pokes) for(const cw of crowd) if(!cw.gone && pokes[cw.id]) aggro(cw,true,true); }
+      if(pokes){ for(const cw of crowd) if(!cw.gone && pokes[cw.id]) aggro(cw,true,true);
+        // pokes only accumulate (and each write re-sends the map) — once every entry has either
+        // been served or refers to a long-gone bystander, clear it. A racing in-flight poke that
+        // gets wiped just means that one punch re-lands on the next swing.
+        if(Object.keys(pokes).length>24) Playroom.setState('crowdPoke',{},true); } }
   }catch(e){ if(!coopApply._w){ console.error('coop sync:', e.message||e); coopApply._w=true; } }
 }
 
@@ -1068,11 +1073,16 @@ function nearestPlayerDX(x){                     // closest of me + any teammate
   return d;
 }
 
-const ENT_FIELDS=['id','k','x','z','y','face','state','st','anim','dead','hp','maxhp','w','d','h',
-  'skin','elite','big','fire','dmg','flash','hitAnimT','recoil','recoilT','tok','hitstun','enter','plasmaCd','hitDone'];
-// bosses carry a pile of archetype-specific state on top of the generic fields above (pal/name/moves
-// are NOT here — they're static per arch, so the guest just looks them up from BOSS_PAL/NAME/MOVES).
-const BOSS_FIELDS=['arch','move','weakOpen','enraged','phase','busX','photo','sc','segs','legs','rise','buffT'];
+// Only what the guest genuinely can't derive goes over the wire. Cosmetic counters that used
+// to ride along (anim, flash, hitAnimT, recoil/recoilT, hitstun) are now DERIVED guest-side —
+// they're just per-frame decays/advances, and syncing them at the 20Hz snapshot rate is both
+// wasted payload (~30% of the blob) and the reason guest animations stepped instead of flowed.
+const ENT_FIELDS=['id','k','x','z','y','face','state','st','dead','hp','maxhp','w','d','h',
+  'skin','elite','big','fire','dmg','enter','plasmaCd'];
+// bosses carry archetype-specific state on top (pal/name/moves are NOT here — static per arch,
+// the guest looks them up from BOSS_PAL/NAME/MOVES). 'photo' is deliberately absent: the guest
+// computes its OWN photo frame so the tourist photographs where the GUEST is standing.
+const BOSS_FIELDS=['arch','move','weakOpen','enraged','phase','busX','sc','segs','legs','rise','buffT','trainX','trainDir'];
 // Enemies ride the SAME channel as player positions — player-state — because that's the one
 // proven to sync every frame (global room state only carries the small, infrequent
 // cans/drops maps; a per-frame enemy blob never reached the guest). The host writes the
@@ -1106,6 +1116,19 @@ function coopBroadcastEnts(){
     if(OPT.dev) console.log('[BROADCAST] host sent', Object.keys(o).length, 'enemies (reliable)');
   }catch(e){ if(OPT.dev) console.error('[BROADCAST] error:', e.message); }
 }
+// A newly-seen enemy came out of SOMETHING — pop the nearest grate/door open locally so the
+// guest gets the same "the street is producing them" read the host does. World gen is
+// deterministic, so the grates/doors are in identical places on every client.
+function coopMirrorArrival(e){
+  if(e.k==='rat' && e.enter>0){
+    let g=null,bd=48; for(const gr of GRATES){ const d=Math.abs(gr.x-e.x); if(d<bd){bd=d;g=gr;} }
+    if(g) g.open=Math.max(g.open, e.big?90:40);
+    if(e.big){ shake=Math.max(shake,8); say(e.x,e.z-60,'SOMETHING BIG','#ff5a2e'); }
+  } else if(e.state==='enter'){
+    let b=null,bd=48; for(const bl of BUILDINGS){ const d=Math.abs(bl.doorX-e.x); if(d<bd){bd=d;b=bl;} }
+    if(b) b.open=Math.max(b.open,60);
+  }
+}
 function coopMirrorEnts(){                        // guest: rebuild enemies from the host's snapshot
   try{
     const hp=coopHostPlayer();
@@ -1117,21 +1140,49 @@ function coopMirrorEnts(){                        // guest: rebuild enemies from
         if(k==='_camLock') continue;                // reserved, not an entity
         const s=snap[k]; if(!s) continue;
         const p=prev[s.id], px=p?p.x:0, pz=p?p.z:0, py=p?p.y:0;
-        const e=Object.assign(p||{vx:0,vy:0,cd:0,enterZ:s.z,recoil:0,recoilT:0}, s);
-        if(p && !s.dead){   // snapshots land at 20Hz — ease toward the authoritative spot so motion stays 60fps-smooth
+        const ps=p?p.state:null, php=p?p._hpSeen:null, pWasDead=p?p._wasDead:false;
+        const e=Object.assign(p||{vx:0,vy:0,cd:0,enterZ:s.z}, s);
+        if(p && !s.dead && !(P.grabE===p)){ // snapshots land at 20Hz — ease toward the authoritative spot so motion stays 60fps-smooth
           e.x=px+(s.x-px)*0.4; e.z=pz+(s.z-pz)*0.4; e.y=py+(s.y-py)*0.4; }
-        if(e.k==='boss'){ e.pal=BOSS_PAL[e.arch]; e.name=BOSS_NAME[e.arch]; e.moves=BOSS_MOVES[e.arch]; }
+        if(P.grabE===p && !s.dead){ e.x=px; e.z=pz; e.y=py; e.state='held'; }   // I'm holding him — pin my local copy through the windup
+        // st advances locally at 60fps between 20Hz snapshots so tick-exact things (projectile
+        // emit windows, melee actives) land right; a fresh snapshot re-anchors it via max()
+        e._lst = (p && ps===e.state) ? Math.max(e.st, (e._lst!=null?e._lst:e.st)+1) : e.st;
+        // guest-local cosmetics — derived, never synced
+        if(!p){ e.anim=0; e.flash=0; e.hitAnimT=0; e.recoil=0; e.recoilT=0; e.hitstun=0; coopMirrorArrival(e); }
+        else {
+          e.anim=(p.anim||0) + Math.min(0.35, Math.hypot(e.x-px,e.z-pz)*0.12 + 0.03);
+          e.flash=Math.max(0,(e.flash||0)-1); e.hitAnimT=Math.max(0,(e.hitAnimT||0)-1);
+          e.recoilT=Math.max(0,(e.recoilT||0)-1); e.hitstun=Math.max(0,(e.hitstun||0)-1);
+          if(php!=null && s.hp<php){ e.flash=8; e.hitAnimT=10; e.recoil=3; e.recoilT=6; }   // somebody tagged him — flinch
+        }
+        e._hpSeen=s.hp;
+        if(e.k==='boss'){ e.pal=BOSS_PAL[e.arch]; e.name=BOSS_NAME[e.arch]; e.moves=BOSS_MOVES[e.arch];
+          if(s.dead && !pWasDead && p) night.bosses++;   // my recap counts the kill too
+          e._wasDead=!!s.dead; }
         ents.push(e);
       }
-      if('_camLock' in snap) camLock=snap._camLock;   // follow the host's arena lock — a boss/wave fight pins the guest's camera too
+      if('_camLock' in snap){
+        const nl=snap._camLock;
+        if(coopMirrorEnts._pl===null && nl!==null && nl!==undefined) say(P.x,P.z-40,'FIGHT','#ff2e88');
+        if(coopMirrorEnts._pl!==null && coopMirrorEnts._pl!==undefined && (nl===null||nl===undefined)){
+          say(P.x,P.z-40,'GO →','#c9d13a');
+          for(const g of GATES) if(!g.done && g.x<P.x+240) g.done=true;   // keep my horizon bar honest
+        }
+        coopMirrorEnts._pl=nl===undefined?null:nl;
+        camLock=nl===undefined?null:nl;              // follow the host's arena lock — a boss/wave fight pins the guest's camera too
+      }
     }
     boss = ents.find(e=>e.k==='boss') || null;        // drawBossBar/drawPhotoFrame/drawBus all read this global directly
     if(!snap && OPT.dev) console.log('[MIRROR] no snapshot from host:', hp?'host exists':'no host');
   }catch(e){ ents.length=0; boss=null; if(OPT.dev) console.error('[MIRROR] error:', e.message); }
 }
+coopMirrorEnts._pl=null;
 let _hitSeq=0; const _hitsApplied=new Set();
-function coopReportHit(id,dmg,kx,launch){        // guest -> host: "I hit enemy `id` for `dmg`"
-  try{ const m=Playroom.getState('hits')||{}; m[coopMyId()+'_'+(_hitSeq++)]={id,dmg,kx,launch};
+// `toss` (with tx/tz) = "I grab-hurled him into the street at this spot" — the host snaps its
+// authoritative copy there and runs the real thrown→road→splat sim with ITS traffic.
+function coopReportHit(id,dmg,kx,launch,toss,tx,tz){   // guest -> host: "I hit enemy `id` for `dmg`"
+  try{ const m=Playroom.getState('hits')||{}; m[coopMyId()+'_'+(_hitSeq++)]={id,dmg,kx,launch,toss,tx,tz};
     Playroom.setState('hits',m,true); }catch(e){}
 }
 function coopApplyHits(){                         // host: apply teammates' reported melee to the real enemies
@@ -1144,10 +1195,23 @@ function coopApplyHits(){                         // host: apply teammates' repo
         if(e.hp<=0 && !e.dead) killBoss(e);
         continue;
       }
+      if(h.toss){                                    // a guest hurled him into the road — run the street sim here
+        if(h.tx!=null){ e.x=h.tx; e.z=h.tz; }
+        e.state='thrown'; e.hitstun=0; e.tok=false; e.hitDone=true;
+        e.vx=(h.kx||1)*rnd(1.6,2.4); e.vy=4.8; e.y=Math.max(e.y,4);
+        continue;
+      }
       e.hp-=h.dmg; e.flash=8; e.tok=false; e.hitstun=10; e.state='stun';
       if(h.launch){ e.state='launch'; e.vx=(h.kx||1)*6; e.vy=2; }
       if(e.hp<=0 && !e.dead){ e.dead=1; e.vx=(h.kx||1)*3; P.conf=Math.min(100,P.conf+2); }
-    } }catch(e){}
+    }
+    // the map only ever grows (guests append forever, each write re-sends the lot on the
+    // reliable channel) — once it's fat, write back only what's still unapplied. A guest's
+    // read-modify-write can resurrect a pruned key, which is why _hitsApplied is kept forever.
+    const keys=Object.keys(m);
+    if(keys.length>40){ const keep={}; for(const k of keys) if(!_hitsApplied.has(k)) keep[k]=m[k];
+      Playroom.setState('hits',keep,true); }
+  }catch(e){}
 }
 function coopNearestPlayer(e){                    // host AI: chase/attack whichever teammate is closest (skip downed)
   let bx=P.x,bz=P.z,bd=Math.hypot(P.x-e.x,(P.z-e.z)*1.6),host=true;
@@ -1156,29 +1220,139 @@ function coopNearestPlayer(e){                    // host AI: chase/attack which
   return {x:bx,z:bz,d:bd,host};
 }
 const _guestHitBy=new Set(), _guestBossHitBy=new Set();
-// Every archetype's real melee window is bespoke — a specific b.st tick or range, checked by
-// updateBoss() against the HOST's own P.x/P.z. Replicating all nine faithfully would mean
-// duplicating that per-archetype logic a second time just for the guest's position, so this is
-// a deliberately generic proxy instead: any archetype, mid-'attack', close enough, once per swing.
-// It won't match each boss's exact hitbox, but it means a guest isn't simply immune to boss melee.
+// ---- guest-local projectile & event emitters ------------------------------------------------
+// THE CHEAT, generalized: nothing an enemy throws is ever synced. Every projectile spawn is a
+// deterministic function of (state, move, st) — all of which the guest already mirrors — so the
+// guest re-runs the same spawn logic locally, aimed at ITS OWN player, and the shared fires[]
+// physics/collision code (which guests always ran) does the rest. e._lst is the locally-advanced
+// st from the mirror, so tick-exact emit windows land right between 20Hz snapshots; _emit tracks
+// the last tick already emitted so a snapshot re-anchoring st can't double-fire.
+const BOSS_AOE_MOVES={fire:1,stomp:1,gavel:1,subpoena:1,clap:1,tornado:1,photo:1,skewer:1};   // handled here, NOT by the generic melee proxy
+function coopGuestEmit(e){
+  const to = e._lst!=null?e._lst:e.st, ch=chinAt();
+  if(e._sSeen!==e.state){                          // state edge — fresh emit window + the telegraph cosmetics
+    e._sSeen=e.state; e._emit=e.st;
+    if(e.k==='boss'){
+      if(e.state==='reload'){ say(e.x,e.z-84,'RELOADING','#3ad1ff'); blip(300,.05); }
+      if(e.state==='retreat') say(P.x,P.z-40,'OFF THE TRACKS!','#ffd23a');
+      if(e.state==='duck') say(e.x,e.z-64,'BEHIND THE CART',e.pal.glow);
+      if(e.state==='wind' && e.move==='photo'){ e.photo={x:P.x, z:P.z, rw:62, rd:32}; blip(80,.05);   // he frames where I'M standing
+        say(e.x,e.z-72,'SAY CHEESE!',e.pal.glow); }
+      if(e.state!=='wind' && e.state!=='attack') e.photo=null;
+    }
+  }
+  let from=e._emit!=null?e._emit:e.st; if(to<from) from=to;
+  // street enemies
+  if(e.k==='rat' && e.fire && e.state==='breathe'){
+    const w=e.big?30:22;
+    for(let k=from+1;k<=to;k++){ if(k===1) blip(50,.05); if(k>w && k<w+34 && k%2===0) emitFire(e); }
+  }
+  if(e.skin==='darnell' && e.elite){               // dark form's plasma — the synced cooldown JUMPING back up means he just lobbed
+    const pc=e.plasmaCd||0;
+    if(e._pcSeen!=null && pc>e._pcSeen+40){
+      const dx=P.x-e.x, dz=P.z-e.z, d=Math.max(1,Math.hypot(dx,dz*1.6));
+      if(d>40 && d<300){ fires.push({x:e.x, z:e.z, y:34, vx:(dx/d)*4.2, vz:(dz/d)*2.2, vy:0, r:6, life:100, max:100,
+        foe:true, plasma:true, sober:S_LIGHT}); puff(e.x,e.z-30,10,6,'#ffb3ff'); blip(180,.08); }
+    }
+    e._pcSeen=pc;
+  }
+  // boss archetypes (spawn logic transcribed from bossAttack/update<Arch> — keep them in step)
+  if(e.k==='boss' && e.state==='attack'){
+    for(let k=from+1;k<=to;k++){
+      if(e.move==='fire' && k>6 && k<34 && k%2===0) emitFire(e);
+      if(e.move==='skewer' && k===6){ const dir=e.face;
+        fires.push({x:e.x+dir*16, z:e.z, y:34, vx:dir*rnd(3.6,4.6), vz:0, vy:0.9, r:5, life:70, max:70, foe:true, skewer:true, sober:S_LIGHT});
+        blip(150,.05); }
+      if(e.move==='clap' && k===5){ const dir=e.face;
+        fires.push({x:e.x+dir*18, z:e.z, y:24, vx:dir*4.4, vz:0, vy:0, r:7, life:120, max:120, foe:true, clap:true, sober:S_LIGHT});
+        blip(120,.06); }
+      if(e.move==='tornado' && k===8){ const dir=e.face;
+        fires.push({x:e.x+dir*20, z:e.z, y:0, vx:dir*2.4, vz:0, vy:0, r:16, life:150, max:150, foe:true, tornado:true, spin:0});
+        rumble(360,.9,.6,true); shake=Math.max(shake,5); }
+      if(e.move==='subpoena' && k===6){ const dir=e.face;
+        for(let i=-1;i<=1;i++)
+          fires.push({x:e.x+dir*18, z:e.z, y:26, vx:dir*rnd(4.2,4.8), vz:i*0.7, vy:0, r:7, life:110, max:110, foe:true, paper:true, spin:(i+1)*2, sober:S_LIGHT});
+        blip(140,.05); say(e.x,e.z-70,"YOU'VE BEEN SERVED",e.pal.glow); }
+      if(e.move==='gavel' && k===12){ shake=Math.max(shake,12); rumble(300,1,.6,true); blip(360,.06);
+        if(P.y<26 && Math.abs(P.x-e.x)<86 && P.iframes<=0) hurtPlayer(ch+8,e.x,S_HEAVY);
+        for(let i=0;i<18;i++) puff(e.x+rnd(-60,60),e.z,rnd(0,10),1,'#6b6478');
+        fires.push({x:e.x-34,z:e.z,y:0,vx:-3.2,vz:0,vy:0,r:10,life:44,max:44,foe:true,shock:true,sober:S_HEAVY});
+        fires.push({x:e.x+34,z:e.z,y:0,vx: 3.2,vz:0,vy:0,r:10,life:44,max:44,foe:true,shock:true,sober:S_HEAVY}); }
+      if(e.move==='stomp' && k===12){ shake=Math.max(shake,11); rumble(320,1,.5,true);
+        if(P.y<26 && Math.abs(P.x-e.x)<92 && P.iframes<=0) hurtPlayer(ch+8,e.x,S_HEAVY);
+        for(let i=0;i<16;i++) puff(e.x+rnd(-46,46),e.z,rnd(0,6),1,'#6b6478'); }
+      if(e.move==='photo' && k===3){                // SNAP — MY frame, MY dodge
+        camFlash=1; shake=Math.max(shake,8); rumble(300,1,.6,true); blip(950,.05);
+        const f=e.photo;
+        if(f && Math.abs(P.x-f.x)<f.rw && Math.abs(P.z-f.z)<f.rd && P.iframes<=0) hurtPlayer(ch+8,f.x,S_HEAVY);
+      }
+    }
+  }
+  // deli gun phase — a state, not a move; shot count derives straight from st
+  if(e.k==='boss' && e.arch==='deli' && e.state==='fire'){
+    for(let k=from+1;k<=to;k++){ if(k%5===0){ const sh=k/5;
+      if(sh>=1 && sh<=30){ const row=FLOOR_N + ((sh*53)%(FLOOR_S-FLOOR_N+1));
+        fires.push({x:e.x+e.face*18, z:row, y:22, vx:e.face*6.4, vz:0, vy:0, r:5, life:130, max:130, foe:true, bullet:true, sober:S_LIGHT});
+        blip(170,.03); } } }
+  }
+  // subway train — continuous, not tick-windowed: position syncs, the danger check is local
+  if(e.k==='boss' && e.arch==='subway' && e.state==='train'){
+    if(t%3===0) shake=Math.max(shake,5); if(t%8===0) rumble(500,1,.6,true);
+    if(P.z < TRACK_Z && Math.abs(P.x-(e.trainX||0))<70 && P.iframes<=0){
+      hurtPlayer(ch+12,e.trainX,S_HEAVY); P.z=Math.min(FLOOR_S,P.z+34); }
+  }
+  e._emit=to;
+}
+// The bespoke per-move AOE/ranged attacks are replicated exactly in coopGuestEmit above; this
+// generic close-range proxy covers everything else (hook/stab/sweep/charge/boot/kick/slap/bonk/
+// backhand/lockup) — any archetype, mid-'attack', close enough, once per swing.
 function coopGuestBossCombat(b){
+  coopGuestEmit(b);
   if(b.dead){ _guestBossHitBy.delete(b.id); return; }
-  const active=b.state==='attack';
+  const active=b.state==='attack' && !BOSS_AOE_MOVES[b.move];
   if(active && !_guestBossHitBy.has(b.id)){
     const rw=b.w+30, rd=b.d+16;
-    if(Math.abs(P.x-(b.x+b.face*rw*0.5))<rw && Math.abs(P.z-b.z)<rd){ _guestBossHitBy.add(b.id); hurtPlayer(b.dmg||10,b.x); }
+    if(Math.abs(P.x-(b.x+b.face*rw*0.5))<rw && Math.abs(P.z-b.z)<rd && P.y<32){ _guestBossHitBy.add(b.id); hurtPlayer(b.dmg||10,b.x); }
   }
   if(!active) _guestBossHitBy.delete(b.id);
+}
+// The host only ever curb-grabs ITS OWN player (P.grabbedBy is local state), so a guest at the
+// curb was silently immune to the road toss. Run the same decision locally against the mirrored
+// vamps instead: local timers, local roll, local hold, local toss. The enemy's pose won't show
+// 'grabbing' on the other screens (its state machine is host-owned) — a fair trade for the
+// mechanic existing at all on 2P.
+function coopGuestGrab(){
+  const g=P.grabbedBy;
+  if(P.state==='grabbed' && g){
+    if(!ents.includes(g) || g.dead){ P.grabbedBy=null; P.struggle=0; P.state='idle'; P.iframes=20; return; }
+    g._grabT=(g._grabT||0)+1;
+    P.x=g.x+(P.x<g.x?-22:22); P.z=g.z;
+    if(g._grabT>=EGRAB_LEN){ tossPlayerToStreet(g.x); g._grabT=0; }
+    return;
+  }
+  if(P.downed || P.iframes>0 || (P.grabImmune||0)>0 || OPT.inv) return;
+  if(!(P.state==='idle'||P.state==='walk') || P.z<=FLOOR_S-30) return;
+  for(const e of ents){
+    if(e.dead || e.k!=='vamp' || e.fire || e.state!=='walk') continue;
+    if(Math.hypot(e.x-P.x,(e.z-P.z)*1.6)>=38) continue;
+    e._gcd=(e._gcd==null?rnd(80,160):e._gcd-1);
+    if(e._gcd<=0){ e._gcd=rnd(120,220);
+      if(Math.random()<0.4){ e._grabT=0; P.state='grabbed'; P.grabbedBy=e; P.struggle=0; P.step=0; P.buf=0; P.talkN=null;
+        blip(140,.06); rumble(200,.6,.5,true); say(e.x,e.z-40,'GOTCHA','#ff2e88'); break; } }
+  }
 }
 function coopGuestCombat(){                       // guest: take damage from any mirrored enemy attacking me
   for(const e of ents){ if(e.dead){ continue; }
     if(e.k==='boss'){ coopGuestBossCombat(e); continue; }
-    const active = e.state==='atk' && (e.k==='rat'?(e.big?(e.st>14&&e.st<26):(e.st>10&&e.st<18)):(e.st>16&&e.st<30));
+    coopGuestEmit(e);
+    const st=e._lst!=null?e._lst:e.st;            // locally-advanced ticks make the windows frame-accurate
+    const active = e.state==='atk' && (e.k==='rat'?(e.big?(st>14&&st<26):(st>10&&st<18)):(st>16&&st<30));
     if(active && !_guestHitBy.has(e.id)){
       const rw=e.k==='rat'?(e.big?34:18):34;
       if(Math.abs(P.x-(e.x+e.face*rw*0.7))<rw && Math.abs(P.z-e.z)<16){ _guestHitBy.add(e.id); hurtPlayer(e.dmg||8,e.x); } }
     if(!active) _guestHitBy.delete(e.id);
   }
+  coopGuestGrab();
 }
 // --- downed / revive ---
 let _lastRevive=0;
@@ -1413,11 +1587,11 @@ function drawBusMob(){
 //====================== bosses ======================
 // every 250m the street clears and a giant procedural monster rises. three archetypes,
 // each rolled fresh from the boss number so no two encounters are the same.
+// ALL archetypes work in co-op now: projectiles are never synced — the guest re-runs each
+// arch's spawn logic locally off the mirrored (state, move, st) timeline (see coopGuestEmit),
+// aimed at its own player. The tourist photographs where the GUEST stands; the train position
+// rides the boss snapshot.
 const BOSS_ARCH=['ratking','bouncer','crawler','deli','subway','halal','auteur','tourist','lawyer'];
-// co-op only supports melee bosses for now — the rest throw projectiles (fires[]) or check a
-// remembered snapshot of the HOST's own position (tourist's photo), neither of which reaches
-// or hits a guest. Bouncer and crawler are the only archetypes with no such attack.
-const MELEE_BOSS_ARCH=['bouncer','crawler'];
 const BOSS_NAME={ratking:'THE RAT KING',bouncer:'THE BOUNCER',crawler:'THE CRAWLER',deli:'THE DELI MAN',
   subway:'THE TRACK WORKER',halal:'THE CART MAN',auteur:'THE AUTEUR',tourist:'THE TOURIST',lawyer:'THE LAWYER'};
 const BOSS_PAL={
@@ -1497,8 +1671,6 @@ function spawnBoss(bn,forceArch){
   // date "her man") stay explicitly off in co-op at their own call sites — only the dev menu's
   // BOSS GAUNTLET / SPAWN BOSS buttons reach here in co-op, and only for whoever's hosting.
   if(coopGuest()) return;
-  if(MP && forceArch && !MELEE_BOSS_ARCH.includes(forceArch)){   // ranged bosses are off in co-op for now (see MELEE_BOSS_ARCH)
-    say(P.x,P.z-40,'RANGED BOSSES: SOLO ONLY (FOR NOW)','#ff2e88'); return; }
   const b=genBoss(bn,forceArch);
   b.x=clamp(camLock+W*0.72, camLock+60, camLock+W-60); b.z=FLOOR_N+34; b.face=-1;
   for(const e of ents) if(!e.dead){ e.dead=1; e.vx=(e.x<b.x?-1:1)*3; }   // the street clears — scatter any stragglers
@@ -1526,8 +1698,7 @@ function forceBoss(){
   if(camLock!==null || boss) return;
   gauntletIx++;
   camLock=Math.max(0,P.x-170);
-  const roster = MP ? MELEE_BOSS_ARCH : BOSS_ARCH;   // co-op gauntlet only cycles the melee-safe archetypes
-  spawnBoss(gauntletIx, roster[(gauntletIx-1)%roster.length]);
+  spawnBoss(gauntletIx, BOSS_ARCH[(gauntletIx-1)%BOSS_ARCH.length]);
 }
 // dev: jump straight to a specific archetype, clearing whatever's up
 function devBoss(arch){
@@ -1996,6 +2167,8 @@ function launchGrabbed(){                                   // the wind-up compl
   const e=P.grabE; if(!e){ P.state='idle'; return; }
   e.state='thrown'; e.hitstun=0; e.tok=false; e.hitDone=true;
   e.vx=P.face*rnd(1.6,2.4); e.vy=4.8; e.y=Math.max(e.y,4);
+  // guest: my copy is a mirror — tell the host to run the real street toss from this spot
+  if(coopGuest() && e.id!=null) coopReportHit(e.id, 0, P.face, false, true, Math.round(e.x), Math.round(e.z));
   shake=Math.max(shake,6); blip(180,.07); rumble(260,.8,.6,true);
   say(e.x,e.z-34,'INTO TRAFFIC','#ffb545');
   P.grabE=null; P.state='idle'; P.step=0; P.buf=0; P.iframes=Math.max(P.iframes,10);   // brief grace on the release/recovery
@@ -2510,7 +2683,7 @@ function update(){
   } else { camX+=((P.x-W*0.42)-camX)*0.09; camX=Math.max(0,camX); }
 
   //---- enemies
-  if(coopGuest()){ coopMirrorEnts(); coopGuestCombat(); }   // guest: mirror the host's enemies + take their hits
+  if(coopGuest()){ if(!dueling){ coopMirrorEnts(); coopGuestCombat(); } }   // guest: mirror the host's enemies + take their hits (never into the duel room)
   else {
   if(MP) coopApplyHits();                                    // host: bank teammates' reported melee first
   let toks=ents.filter(e=>!e.dead&&e.tok).length;
@@ -2683,11 +2856,14 @@ function update(){
         if(Math.abs(f.x-e.x)<f.r*0.8+e.w && Math.abs(f.z-e.z)<f.r*0.6+e.d){
           if(e.k==='boss' && bossInv(e)){ f.gone=true; e.flash=3; break; }   // shielded mid-move
           const fd=f.dmg || (f.r>7?11:7); e.hp-=fd; e.flash=8;
+          // guest: the local hp write is only prediction on a mirrored copy — the snapshot
+          // overwrites it. Report through the hits channel so the HOST's real enemy takes it.
+          if(coopGuest() && e.id!=null) coopReportHit(e.id, fd, Math.sign(f.vx)||P.face, !!(f.weapon&&f.wlaunch));
           if(f.weapon){ const w=WEAPONS[f.weapon]; shake=Math.max(shake,7); hitstop=Math.max(hitstop,8); rumble(300,.9,.7,true);
             puff(e.x,e.z,e.h*0.5,10,w.col); blip(200,.06);
             if(e.k!=='boss' && f.wlaunch){ e.state='launch'; e.hitstun=30; e.vx=P.face*8; e.vy=3.0; }   // a thrown pipe knocks 'em flying
             else if(e.k!=='boss') e.hitstun=Math.max(e.hitstun,16); }
-          if(e.k==='boss'){ e.dmgTaken=(e.dmgTaken||0)+fd; if(e.hp<=0&&!e.dead) killBoss(e); }
+          if(e.k==='boss'){ e.dmgTaken=(e.dmgTaken||0)+fd; if(e.hp<=0&&!e.dead&&!coopGuest()) killBoss(e); }
           else { e.hitstun=Math.max(e.hitstun,f.weapon?e.hitstun:8);
             if(e.hp<=0&&!e.dead){ e.dead=1; P.conf=Math.min(100,P.conf+1.5); puff(e.x,e.z,e.h*0.5,6,f.weapon?WEAPONS[f.weapon].col:'#ff8c3a'); } }
           f.gone=true; break;

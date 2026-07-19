@@ -97,7 +97,7 @@ const driver = `
    throwWeapon,drop, get WEAPONS(){return WEAPONS},
    genBoss,spawnBoss,updateBoss,killBoss,enrageBoss,hits,atkBox,startDate,resolveDate,
    buyContinue,callItNight,clutchRevive,continueCost,confFloor,
-   spawnBusMob,updateBusMob, coopApplyHits,coopReportHit,coopGuestBossCombat,
+   spawnBusMob,updateBusMob, coopApplyHits,coopReportHit,coopGuestBossCombat,coopGuestCombat,coopGuestEmit,coopUpdateHost,
    pvpPunch,pvpTick,duelExitFinish, get pvpDueling(){return dueling}, get pvpPhase(){return duelPhase}, get pvpRole(){return duelRole}});
 ;globalThis.__key=(k,v)=>{ if(v&&!key[k]) pressed[k]=true; key[k]=v; };
 ;globalThis.__tick=(n)=>{ for(let i=0;i<n;i++){ update(); } };
@@ -750,13 +750,47 @@ if(!err){
     g.coopApplyHits();
     if(hostBoss.state!=='dead') throw new Error('a killing guest hit did not route through killBoss (state='+hostBoss.state+')');
 
-    // ranged archetypes throw projectiles (fires[]) or check the host's own remembered position
-    // (tourist's photo) — neither reaches a guest, so they're off in co-op for now
+    // ranged archetypes now work in co-op too — projectiles are re-emitted locally on the guest
+    // (coopGuestEmit), so nothing blocks the lawyer/deli/etc from spawning
     g.releaseArena();
+    g.setCamLock(Math.max(0,g.P.x-170));
     g.spawnBoss(1,'lawyer');
-    if(g.boss) throw new Error('a ranged archetype (lawyer) spawned in co-op — should be melee-only for now');
+    if(!g.boss) throw new Error('a ranged archetype (lawyer) refused to spawn in co-op — all archetypes should work now');
 
     __setMP(false); delete global.Playroom; g.releaseArena();
+  });
+  scene('co-op guest emitters: fire-rat breath + boss projectiles spawn locally from the mirror', ()=>{
+    // The generalized cheat: enemy/boss projectiles are never synced — the guest re-runs each
+    // spawn rule off the mirrored (state, move, st) timeline, and _lst (locally-advanced st)
+    // makes tick-exact windows land between the 20Hz snapshots. Play a pure guest here: a fake
+    // lower-id host player carries a handcrafted snapshot; mirror + guest-combat tick against it.
+    const s={};
+    const hostP={ id:'aaa', getState:k=>s[k], setState:()=>{}, onQuit:()=>{} };
+    global.Playroom={ myPlayer:()=>({id:'zzz', setState:()=>{}, getState:()=>null}), getState:()=>null, setState:()=>{} };
+    const g=__G();
+    __others().length=0; __others().push(hostP);
+    __setMP(true); g.coopUpdateHost();               // 'aaa' < 'zzz' → this client is the GUEST
+    g.releaseArena();
+
+    // a fire rat mid-breathe: window is st>22 && st<56, every 2nd tick. st starts below it.
+    s.ents={ fr1:{id:'fr1',k:'rat',fire:true,big:false,x:g.P.x+300,z:g.P.z,y:0,face:-1,state:'breathe',st:18,
+                  dead:0,hp:12,maxhp:12,w:16,d:8,h:14,skin:undefined,elite:false,dmg:5,enter:0,plasmaCd:0},
+             _camLock:null };
+    for(let i=0;i<20;i++){ g.coopMirrorEnts(); g.coopGuestCombat(); }   // _lst advances 18→38, crossing into the window
+    const flames=g.fires.filter(f=>f.foe && !f.bullet && !f.paper).length;
+    if(!flames) throw new Error('guest emitted no fire-rat flames from the mirrored breathe state');
+
+    // a ratking mid-'fire' move: emits on st>6 && st<34, every 2nd tick
+    g.releaseArena();
+    s.ents={ bk1:{id:'bk1',k:'boss',x:g.P.x+300,z:g.P.z,y:0,face:-1,state:'attack',st:4,dead:0,hp:500,maxhp:500,
+                  w:32,d:18,h:76,dmg:10,enter:0,plasmaCd:0,
+                  arch:'ratking',move:'fire',weakOpen:0,enraged:false,phase:null,busX:0,sc:3.1,segs:5,legs:4,rise:0,buffT:0,trainX:0,trainDir:1},
+             _camLock:null };
+    for(let i=0;i<20;i++){ g.coopMirrorEnts(); g.coopGuestCombat(); }
+    if(!g.fires.length) throw new Error('guest emitted nothing for the ratking fire move');
+    console.log('        guest spawned '+flames+' rat flames + '+g.fires.length+' ratking fires, all locally');
+
+    __setMP(false); __others().length=0; delete global.Playroom; g.releaseArena();
   });
   scene('co-op PvP duel: 3 hits challenges, 3 back accepts, then a real fight to a winner', ()=>{
     // Same single-process trick as the other co-op scenes: one shared room-state store, and
