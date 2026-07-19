@@ -1522,8 +1522,8 @@ function spawnWave(T){
   // one player's worth of enemies per player in the room (floor of 2 in co-op so a
   // not-yet-joined lobby still fights a real wave; capped at 4P)
   const M = MP ? Math.max(2, Math.min(4, others.length+1)) : 1;
-  const nRats  = Math.min(10, 3+Math.floor(T*0.9)) * M;
-  const nVamps = Math.min(7,  1+Math.floor(T*0.7)) * M;
+  const nRats  = Math.min(10, 3+Math.floor(T*0.9)) * Math.min(2, M);   // rats cap at the 2x rate — swarm noise, not the fight
+  const nVamps = Math.min(7,  1+Math.floor(T*0.7)) * M;                // the real bodies scale with the roster
   const pFire  = T>=1 ? Math.min(0.55, 0.12+T*0.07) : 0;
   const bigRat = T>=2 && (T%2===0 || Math.random()<0.4);
   for(let i=0;i<nRats;i++){

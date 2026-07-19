@@ -759,21 +759,23 @@ if(!err){
 
     __setMP(false); delete global.Playroom; g.releaseArena();
   });
-  scene('co-op waves scale per player: 4P spawns double a 2P wave', ()=>{
+  scene('co-op waves scale per player — vamps by roster, rats capped at the 2x rate', ()=>{
     global.Playroom={ myPlayer:()=>({id:'me',setState:()=>{},getState:()=>null}), getState:()=>null, setState:()=>{} };
     const g=__G();
     const fake=id=>({id, getState:()=>null, setState:()=>{}, onQuit:()=>{}});
+    const count=k=>g.ents.filter(e=>e.k===k).length;
     __setMP(true);
     __others().length=0; __others().push(fake('b'));                 // 2P room
     g.releaseArena(); g.clearEnts(); g.spawnWave(1);
-    const two=g.ents.length;
+    const rats2=count('rat'), vamps2=g.ents.length-rats2;
     __others().push(fake('c'), fake('d'));                           // 4P room
     g.clearEnts(); g.spawnWave(1);
-    const four=g.ents.length;
+    const rats4=count('rat'), vamps4=g.ents.length-rats4;
     __setMP(false); __others().length=0; delete global.Playroom; g.releaseArena();
-    if(!(two>0)) throw new Error('2P wave spawned nothing');
-    if(four!==two*2) throw new Error('4P wave is not double the 2P wave: '+two+' vs '+four);
-    console.log('        wave size 2P='+two+'  4P='+four);
+    if(!(vamps2>0&&rats2>0)) throw new Error('2P wave spawned nothing: rats '+rats2+' vamps '+vamps2);
+    if(vamps4!==vamps2*2) throw new Error('4P vamps are not double 2P: '+vamps2+' vs '+vamps4);
+    if(rats4!==rats2) throw new Error('rat count should cap at the 2x rate: 2P '+rats2+' vs 4P '+rats4);
+    console.log('        2P: '+rats2+' rats + '+vamps2+' vamps   4P: '+rats4+' rats + '+vamps4+' vamps');
   });
   scene('co-op: the 250m threshold spawns a boss for the host', ()=>{
     // The auto-trigger was hard-gated !MP ('no bosses in co-op'). Now the HOST's position
