@@ -87,14 +87,17 @@ const driver = `
    get date(){return date}, get dateOn(){return dateOn},
    get lives(){return lives}, get night(){return night}, get dawnShown(){return dawnShown},
    get continueOn(){return continueOn}, get builtOn(){return builtOn}, get DAWN_X(){return DAWN_X},
+   get busMob(){return busMob},
    spawn:(e)=>ents.push(e), clearEnts:()=>{ ents.length=0; },
    setCamLock:(v)=>{ camLock=v; camX=v; }, setBest:(v)=>{ best=v; }, setLives:(v)=>{ lives=v; },
+   setBusMobAt:(v)=>{ busMobAt=v; },   // deterministic suite: park the once-a-run roll so it can't fire mid-scene
    releaseArena:()=>{ ents.length=0; camLock=null; boss=null; bossDone=0; hitstop=0; dateOn=false; date=null; fires.length=0; },
    rat,vamp,connect,hurtPlayer,setShop,buy,spawnWave,tier,stream,update,render,talkLen,resolveTalk,aggro,mkNpc,coopApply,coopBroadcastEnts,coopMirrorEnts,
    tryGrab,grabbable,atCurb,splatInTraffic,dropGrab,launchGrabbed,tossPlayerToStreet,
    throwWeapon,drop, get WEAPONS(){return WEAPONS},
    genBoss,spawnBoss,updateBoss,killBoss,enrageBoss,hits,atkBox,startDate,resolveDate,
-   buyContinue,callItNight,clutchRevive,continueCost,confFloor});
+   buyContinue,callItNight,clutchRevive,continueCost,confFloor,
+   spawnBusMob,updateBusMob});
 ;globalThis.__key=(k,v)=>{ if(v&&!key[k]) pressed[k]=true; key[k]=v; };
 ;globalThis.__tick=(n)=>{ for(let i=0;i<n;i++){ update(); } };
 ;globalThis.__draw=()=>render();
@@ -149,6 +152,8 @@ if(!err){
   scene('PRESS START -> play', ()=>{
     __start();
     if(__mode()!=='play') throw new Error('still on title after start');
+    __G().setBusMobAt(Infinity);   // the once-a-run tour-bus roll is real randomness — park it so the
+                                    // rest of this deterministic suite can't have it land mid-scene
     __tick(120);
   });
   scene('walk right 4000 ticks (streaming, gates, waves, AI)', ()=>{
@@ -156,6 +161,21 @@ if(!err){
   });
   scene('chunks streamed + culled', ()=>{
     const g=__G(); if(!g.BUILDINGS.length) throw new Error('no buildings after walking');
+  });
+  scene('tour bus mob (dev button): rolls in, drops a horde, then leaves', ()=>{
+    const g=__G(); g.releaseArena();
+    g.spawnBusMob(true);
+    if(!g.busMob) throw new Error('spawnBusMob did not arm a bus');
+    let ticks=0;
+    while(g.busMob && g.busMob.phase==='arrive' && ticks<200){ g.updateBusMob(); ticks++; }
+    if(!g.busMob || g.busMob.phase!=='stopped') throw new Error('bus never reached its stop, phase='+(g.busMob&&g.busMob.phase));
+    const dropped=g.ents.filter(e=>e.k==='rat'||e.k==='vamp').length;
+    if(dropped<20) throw new Error('bus mob dropped too few enemies: '+dropped);
+    console.log('        bus stopped and dropped '+dropped+' enemies');
+    while(g.busMob && ticks<3000){ g.updateBusMob(); ticks++; }
+    if(g.busMob) throw new Error('bus never left after '+ticks+' ticks');
+    console.log('        bus drove off after '+ticks+' ticks total');
+    g.releaseArena();
   });
   scene('mash punch 600 ticks (full combo, connects)', ()=>{
     for(let i=0;i<600;i++){ if(i%7===0) __key('KeyJ',true); else __key('KeyJ',false); __tick(1); }

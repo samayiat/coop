@@ -194,6 +194,7 @@ kbd{background:#191725;border:1px solid #2f2b3d;border-bottom-width:2px;border-r
             <div class="row"><button class="mini" id="d_cash">+$100</button><button class="mini" id="d_conf">+30 CONF</button></div>
             <div class="row"><button class="mini" id="d_kill">CLEAR WAVE</button><button class="mini" id="d_reset">RESET RUN</button></div>
             <div class="row"><button class="mini" id="d_boss" style="width:100%">BOSS GAUNTLET</button></div>
+            <div class="row"><button class="mini" id="d_busmob" style="width:100%">TOUR BUS MOB</button></div>
             <div class="row" style="justify-content:flex-start"><span style="font-size:8px;color:#5c5670;letter-spacing:.12em">SPAWN BOSS</span></div>
             <div class="row" id="d_bosssel" style="flex-wrap:wrap;gap:4px;justify-content:flex-start"></div>
           </div>
@@ -544,6 +545,7 @@ $('d_kill').onclick=()=>{ for(const e of ents) if(!e.dead){e.hp=0;e.dead=1;} };
 $('d_reset').onclick=()=>{ reset(); setPause(false); };
 $('d_boss').onclick=()=>{ for(const e of ents) e.dead=Math.max(e.dead,1); camLock=null; boss=null;
   gauntlet=3; gauntletIx=0; setPause(false); forceBoss(); };   // clear the street, then one of each
+$('d_busmob').onclick=()=>{ setPause(false); spawnBusMob(true); };   // force it on demand, bypassing the once-a-run roll
 $('install').onclick=async()=>{
   if(deferredPrompt){ deferredPrompt.prompt(); try{ await deferredPrompt.userChoice; }catch(e){} deferredPrompt=null; return; }
   $('a2hsBody').innerHTML=a2hsText(); $('a2hs').classList.add('on');
@@ -774,6 +776,7 @@ function reset(){
 
   ents=[];drops=[];parts=[];floats=[];fires=[];camLock=null;camX=0;camFlash=0;
   boss=null; bossDone=0; bossDeaths=0; bossNagged=false; gauntlet=0; gauntletIx=0; dateOn=false; date=null; $('touch').classList.remove('dating');
+  busMob=null; busMobAt = t + (Math.random()<0.75 ? Math.floor(rnd(1800,5400)) : Infinity);   // ~once a run, not guaranteed
   lives=3; continues=0; night={bosses:0,women:0,cash:0,reach:0,traffic:0}; dawnShown=false;   // fresh night
   cans=[]; npcs=[]; crowd=[]; cars=[]; litter=[]; steam=[]; props=[];
   BUILDINGS=[]; CLUBS=[]; GRATES=[]; GATES=[]; MADE.clear();
@@ -1193,6 +1196,81 @@ function spawnWave(T){
       say(g.x,g.z-60,'SOMETHING BIG','#ff5a2e'); } }, 900);
   }
   say(P.x,P.z-40,'FIGHT','#ff2e88');
+}
+
+// ---- tour bus mob: a rare street event. a double-decker rolls down the road, stops right
+// in view, and dumps a horde of ~30 out its door. Host-only like every other co-op set piece
+// (the enemies it spawns ride the normal ents channel for free; the bus itself is cosmetic,
+// so it's mirrored separately over 'bus' — same reliable/throttled pattern as coopBroadcastEnts).
+let busMob=null, busMobAt=Infinity;
+function spawnBusMob(force){
+  if(coopGuest()) return;                 // host (or solo) triggers; guest just watches it arrive
+  if(busMob || boss) return;
+  if(!force) busMobAt=Infinity;           // the natural roll is one-shot; the dev button leaves it armed so it can be re-fired
+  const dir=Math.random()<0.5?1:-1;
+  const stopX=camX+W*0.5;
+  busMob={x: dir>0?camX-280:camX+W+280, dir, stopX, lane: dir>0?348:334,
+    phase:'arrive', st:0, total:Math.floor(rnd(24,32))};
+  say(P.x,P.z-50,'TOUR BUS INCOMING','#ffd23a'); blip(220,.06);
+}
+function updateBusMob(){
+  if(coopGuest()){ coopMirrorBus(); return; }
+  const bm=busMob;
+  if(bm){
+    if(bm.phase==='arrive'){
+      bm.x+=bm.dir*10;
+      if((bm.dir>0&&bm.x>=bm.stopX)||(bm.dir<0&&bm.x<=bm.stopX)){
+        bm.x=bm.stopX; bm.phase='stopped'; bm.st=0; bm.stopTicks=90+bm.total*9;
+        shake=Math.max(shake,6); rumble(340,.6,.6,true); say(bm.x,FLOOR_S+8,"THEY'RE HERE",'#ff2e88');
+        for(let i=0;i<bm.total;i++){
+          const isRat=i%3!==0;                              // ~2 in 3 rats — a swarm, not thirty brawlers
+          setTimeout(()=>{ if(paused||busMob!==bm) return;
+            const x=bm.x+rnd(-70,70), z=rnd(FLOOR_N+10,FLOOR_S-6);
+            const e=isRat?rat(x,z):vamp(x,z); e.flash=12; ents.push(e); puff(x,z,20,5,'#6b6478');
+          }, 260+i*140);
+        }
+      }
+    } else if(bm.phase==='stopped'){
+      if(++bm.st>bm.stopTicks) bm.phase='leave';
+    } else if(bm.phase==='leave'){
+      bm.x+=bm.dir*10;
+      if(bm.x<camX-340||bm.x>camX+W+340) busMob=null;
+    }
+  }
+  // always on schedule, active or not — a bus that just left must broadcast its own absence,
+  // not rely on landing exactly on a throttled tick while non-null
+  if(MP && t%3===0) coopBroadcastBus();
+}
+function coopBroadcastBus(){
+  try{ Playroom.myPlayer().setState('bus', busMob?{x:busMob.x,dir:busMob.dir,phase:busMob.phase,lane:busMob.lane}:null, true); }catch(e){}
+}
+function coopMirrorBus(){
+  try{
+    const hp=coopHostPlayer(); const snap=hp&&hp.getState('bus');
+    if(!snap){ busMob=null; return; }
+    if(!busMob) busMob=Object.assign({},snap);
+    else{ busMob.x+=(snap.x-busMob.x)*0.4; busMob.dir=snap.dir; busMob.phase=snap.phase; busMob.lane=snap.lane; }
+  }catch(e){ busMob=null; }
+}
+function drawBusMob(){
+  const bm=busMob; if(!bm) return;
+  const sx=bm.x-camX, by=bm.lane, len=170, h1=34, h2=30;
+  const doorT= bm.phase==='stopped'?clamp(bm.st/20,0,1):(bm.phase==='leave'?clamp(1-bm.st/20,0,1):0);
+  ctx.save();
+  ctx.globalAlpha=.35; ctx.fillStyle='#000'; ctx.beginPath(); ctx.ellipse(sx,by+16,len/2,6,0,0,7); ctx.fill(); ctx.globalAlpha=1;
+  ctx.fillStyle='#c9273f'; ctx.fillRect(sx-len/2,by-h1,len,h1);                       // lower deck
+  ctx.fillStyle='#e23a54'; ctx.fillRect(sx-len/2+6,by-h1-h2,len-12,h2);               // upper deck, set back
+  ctx.fillStyle='#7a1626'; ctx.fillRect(sx-len/2,by-6,len,6);                         // skirt
+  ctx.fillStyle='#5aa0c8';
+  for(let i=0;i<6;i++) ctx.fillRect(sx-len/2+10+i*26,by-h1+8,18,14);                  // lower windows
+  for(let i=0;i<6;i++) ctx.fillRect(sx-len/2+12+i*24,by-h1-h2+7,16,14);               // upper windows
+  ctx.fillStyle= doorT>0.4?'#141822':'#0b0a10';
+  ctx.fillRect(sx-len/2+6, by-h1+8, 18+doorT*10, h1-12);                              // door, opens on the stop
+  ctx.fillStyle='#1a1a20'; ctx.beginPath();
+  ctx.arc(sx-len*0.32,by,10,0,7); ctx.arc(sx+len*0.32,by,10,0,7); ctx.fill();          // wheels
+  ctx.fillStyle='#fff6d8'; ctx.font='bold 10px "Bebas Neue",sans-serif'; ctx.textAlign='center';
+  ctx.fillText('CITY TOURS', sx, by-h1-h2-4);
+  ctx.restore(); ctx.textAlign='left';
 }
 
 //====================== bosses ======================
@@ -2266,6 +2344,8 @@ function update(){
   if(bn>bossDone && bn>0 && camLock===null && !MP){ bossDone=bn; camLock=Math.max(0,P.x-170); spawnBoss(bn); }   // no bosses in co-op
   for(const g of GATES) if(!g.done && P.x>g.x && P.x-g.x<140 && camLock===null && !coopGuest()){   // host (or solo) triggers the wave; the guest mirrors the enemies
     camLock=Math.max(0,g.x-170); spawnWave(tier()); g.done='fight'; }
+  if(!coopGuest() && !busMob && !boss && camLock===null && P.x>600 && t>=busMobAt) spawnBusMob();   // the rare tour-bus horde
+  updateBusMob();
   if(camLock!==null && !OPT.freecam){
     camX+=(camLock-camX)*0.1;
     if(t%20===0 && !ents.some(e=>!e.dead)){ camLock=null; boss=null;
@@ -3825,6 +3905,7 @@ function render(){
   drawPhotoFrame();                              // the tourist's viewfinder telegraph
   drawLitter();
   drawCars();
+  drawBusMob();
 
   // curb prompt: a staggered mark within reach of the street can be shoved into it
   if(!dateOn && !boss && P.state!=='grab'){ const g=grabbable();
