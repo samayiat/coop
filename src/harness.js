@@ -97,7 +97,7 @@ const driver = `
    throwWeapon,drop, get WEAPONS(){return WEAPONS},
    genBoss,spawnBoss,updateBoss,killBoss,enrageBoss,hits,atkBox,startDate,resolveDate,
    buyContinue,callItNight,clutchRevive,continueCost,confFloor,
-   spawnBusMob,updateBusMob});
+   spawnBusMob,updateBusMob, coopApplyHits,coopReportHit,coopGuestBossCombat});
 ;globalThis.__key=(k,v)=>{ if(v&&!key[k]) pressed[k]=true; key[k]=v; };
 ;globalThis.__tick=(n)=>{ for(let i=0;i<n;i++){ update(); } };
 ;globalThis.__draw=()=>render();
@@ -700,12 +700,56 @@ if(!err){
     __setMP(true);
     g.clearEnts(); g.spawn(g.vamp(500,306,false)); g.spawn(g.rat(560,310));
     g.coopBroadcastEnts();
-    const ok = s.ents && !Array.isArray(s.ents) && Object.keys(s.ents).length===2;
+    const entKeys = s.ents ? Object.keys(s.ents).filter(k=>k!=='_camLock') : [];   // _camLock rides the same object, reserved
+    const ok = s.ents && !Array.isArray(s.ents) && entKeys.length===2;
     g.clearEnts(); g.coopMirrorEnts();
     const n=g.ents.length;
     __setMP(false); delete global.Playroom; g.clearEnts();
     if(!ok) throw new Error('enemy snapshot is not a 2-entry id-keyed object on player-state');
     if(n!==2) throw new Error('guest mirror rebuilt '+n+' enemies, expected 2');
+  });
+  scene('co-op boss (dev menu): syncs to the guest and takes a reported guest hit', ()=>{
+    // Bosses were flatly disabled in co-op (spawnBoss returned immediately for any MP client).
+    // Now the dev menu's BOSS GAUNTLET / SPAWN BOSS buttons work host-side in co-op, the boss
+    // rides the same ents channel as regular enemies (plus its own archetype-specific fields
+    // and camLock, piggybacked on the same snapshot object), and a guest's melee reports back
+    // to the host through the existing 'hits' channel like any other enemy.
+    const s={}, room={};
+    const meP={ id:'me', setState:(k,v)=>{s[k]=v;}, getState:k=>s[k] };
+    global.Playroom={ myPlayer:()=>meP, getState:k=>room[k], setState:(k,v)=>{room[k]=v;} };
+    const g=__G();
+    __others().length=0;              // no teammates in the roster → 'me' is unambiguously the host
+    __setMP(true);
+    __tick(1);                        // let coopUpdateHost() settle _amHost against THIS Playroom/others before spawning
+    g.releaseArena();
+    g.setCamLock(Math.max(0,g.P.x-170));            // devBoss()/forceBoss() always lock the arena before spawning; do the same here
+    g.spawnBoss(1,'bouncer');                       // as the dev button would, direct and host-side
+    const hostBoss=g.boss;
+    if(!hostBoss) throw new Error('spawnBoss did not create a boss in co-op');
+    hostBoss.state='idle'; hostBoss.st=0;            // clear of the intro i-frames so a reported hit actually lands
+    g.coopBroadcastEnts();
+    const before=hostBoss.hp;
+
+    g.clearEnts();                                   // now play the guest: same process, opposite side of the snapshot
+    g.coopMirrorEnts();
+    const mb=g.ents.find(e=>e.k==='boss');
+    if(!mb) throw new Error('guest never received the boss');
+    if(mb.arch!=='bouncer') throw new Error('boss arch did not sync to the guest: got '+mb.arch);
+    if(!mb.pal || !mb.pal.glow) throw new Error("guest didn't derive the boss palette from arch");
+    if(typeof mb.sc!=='number' || mb.sc<=0) throw new Error('boss scale (sc) did not sync to the guest');
+    if(g.camLock===null) throw new Error("the host's camLock did not sync to the guest during the boss fight");
+
+    g.coopReportHit(mb.id, 20, 1, false);            // guest melee → reported (writes to the room-level 'hits' state)
+
+    g.clearEnts(); g.spawn(hostBoss);   // back on the host: same real boss object, coopApplyHits() must mutate THIS one
+    g.coopApplyHits();
+    if(hostBoss.hp!==before-20) throw new Error('reported guest hit did not land on the host boss: hp '+hostBoss.hp+' expected '+(before-20));
+
+    g.coopReportHit(mb.id, hostBoss.hp+50, 1, false); // a killing blow
+    g.coopApplyHits();
+    if(hostBoss.state!=='dead') throw new Error('a killing guest hit did not route through killBoss (state='+hostBoss.state+')');
+
+    __setMP(false); delete global.Playroom; g.releaseArena();
   });
   scene('co-op: cans + drops sync, and cash pays both players', ()=>{
     const g=__G();

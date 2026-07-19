@@ -543,8 +543,8 @@ $('d_cash').onclick=()=>P.money+=100;
 $('d_conf').onclick=()=>P.conf=Math.min(100,P.conf+30);
 $('d_kill').onclick=()=>{ for(const e of ents) if(!e.dead){e.hp=0;e.dead=1;} };
 $('d_reset').onclick=()=>{ reset(); setPause(false); };
-$('d_boss').onclick=()=>{ for(const e of ents) e.dead=Math.max(e.dead,1); camLock=null; boss=null;
-  gauntlet=3; gauntletIx=0; setPause(false); forceBoss(); };   // clear the street, then one of each
+$('d_boss').onclick=()=>{ if(coopGuest()) return; for(const e of ents) e.dead=Math.max(e.dead,1); camLock=null; boss=null;
+  gauntlet=3; gauntletIx=0; setPause(false); forceBoss(); };   // clear the street, then one of each — host-only in co-op
 $('d_busmob').onclick=()=>{ setPause(false); spawnBusMob(true); };   // force it on demand, bypassing the once-a-run roll
 $('install').onclick=async()=>{
   if(deferredPrompt){ deferredPrompt.prompt(); try{ await deferredPrompt.userChoice; }catch(e){} deferredPrompt=null; return; }
@@ -1070,7 +1070,10 @@ function nearestPlayerDX(x){                     // closest of me + any teammate
 }
 
 const ENT_FIELDS=['id','k','x','z','y','face','state','st','anim','dead','hp','maxhp','w','d','h',
-  'skin','elite','big','fire','dmg','flash','hitAnimT','recoil','recoilT','tok','hitstun','enter','plasmaCd'];
+  'skin','elite','big','fire','dmg','flash','hitAnimT','recoil','recoilT','tok','hitstun','enter','plasmaCd','hitDone'];
+// bosses carry a pile of archetype-specific state on top of the generic fields above (pal/name/moves
+// are NOT here — they're static per arch, so the guest just looks them up from BOSS_PAL/NAME/MOVES).
+const BOSS_FIELDS=['arch','move','weakOpen','enraged','phase','busX','photo','sc','segs','legs','rise','buffT'];
 // Enemies ride the SAME channel as player positions — player-state — because that's the one
 // proven to sync every frame (global room state only carries the small, infrequent
 // cans/drops maps; a per-frame enemy blob never reached the guest). The host writes the
@@ -1094,7 +1097,12 @@ function coopBroadcastEnts(){
     const o={};
     for(const e of ents){ const s={}; for(const f of ENT_FIELDS){ let v=e[f];
       if(typeof v==='number') v=Math.round(v*10)/10;   // shrink the payload — sub-decimal precision is invisible
-      s[f]=v; } o[e.id]=s; }
+      s[f]=v; }
+      if(e.k==='boss') for(const f of BOSS_FIELDS){ let v=e[f];
+        if(typeof v==='number') v=Math.round(v*100)/100;   // finer precision — sc/rise are small fractions
+        s[f]=v; }
+      o[e.id]=s; }
+    o._camLock=camLock;   // reserved key — entId() always starts with 'e', so this can't collide with an enemy id
     Playroom.myPlayer().setState('ents', o, true);
     if(OPT.dev) console.log('[BROADCAST] host sent', Object.keys(o).length, 'enemies (reliable)');
   }catch(e){ if(OPT.dev) console.error('[BROADCAST] error:', e.message); }
@@ -1107,16 +1115,20 @@ function coopMirrorEnts(){                        // guest: rebuild enemies from
     ents.length=0;
     if(snap){
       for(const k in snap){
+        if(k==='_camLock') continue;                // reserved, not an entity
         const s=snap[k]; if(!s) continue;
         const p=prev[s.id], px=p?p.x:0, pz=p?p.z:0, py=p?p.y:0;
         const e=Object.assign(p||{vx:0,vy:0,cd:0,enterZ:s.z,recoil:0,recoilT:0}, s);
         if(p && !s.dead){   // snapshots land at 20Hz — ease toward the authoritative spot so motion stays 60fps-smooth
           e.x=px+(s.x-px)*0.4; e.z=pz+(s.z-pz)*0.4; e.y=py+(s.y-py)*0.4; }
+        if(e.k==='boss'){ e.pal=BOSS_PAL[e.arch]; e.name=BOSS_NAME[e.arch]; e.moves=BOSS_MOVES[e.arch]; }
         ents.push(e);
       }
+      if('_camLock' in snap) camLock=snap._camLock;   // follow the host's arena lock — a boss/wave fight pins the guest's camera too
     }
+    boss = ents.find(e=>e.k==='boss') || null;        // drawBossBar/drawPhotoFrame/drawBus all read this global directly
     if(!snap && OPT.dev) console.log('[MIRROR] no snapshot from host:', hp?'host exists':'no host');
-  }catch(e){ ents.length=0; if(OPT.dev) console.error('[MIRROR] error:', e.message); }
+  }catch(e){ ents.length=0; boss=null; if(OPT.dev) console.error('[MIRROR] error:', e.message); }
 }
 let _hitSeq=0; const _hitsApplied=new Set();
 function coopReportHit(id,dmg,kx,launch){        // guest -> host: "I hit enemy `id` for `dmg`"
@@ -1127,6 +1139,12 @@ function coopApplyHits(){                         // host: apply teammates' repo
   try{ const m=Playroom.getState('hits'); if(!m) return;
     for(const k in m){ if(_hitsApplied.has(k)) continue; _hitsApplied.add(k); const h=m[k];
       const e=ents.find(x=>x.id===h.id && !x.dead); if(!e) continue;
+      if(e.k==='boss'){                              // bosses chip + stagger, never stun/launch/smash (see connect())
+        if(bossInv(e)){ e.flash=4; continue; }        // mid-move i-frames — the guest's report raced a wind-up; no damage
+        e.hp-=h.dmg; e.flash=8;
+        if(e.hp<=0 && !e.dead) killBoss(e);
+        continue;
+      }
       e.hp-=h.dmg; e.flash=8; e.tok=false; e.hitstun=10; e.state='stun';
       if(h.launch){ e.state='launch'; e.vx=(h.kx||1)*6; e.vy=2; }
       if(e.hp<=0 && !e.dead){ e.dead=1; e.vx=(h.kx||1)*3; P.conf=Math.min(100,P.conf+2); }
@@ -1138,9 +1156,24 @@ function coopNearestPlayer(e){                    // host AI: chase/attack which
     if(!p||p.down) continue; const d=Math.hypot(p.x-e.x,(p.z-e.z)*1.6); if(d<bd){ bd=d;bx=p.x;bz=p.z;host=false; } } }catch(_){}}
   return {x:bx,z:bz,d:bd,host};
 }
-const _guestHitBy=new Set();
+const _guestHitBy=new Set(), _guestBossHitBy=new Set();
+// Every archetype's real melee window is bespoke — a specific b.st tick or range, checked by
+// updateBoss() against the HOST's own P.x/P.z. Replicating all nine faithfully would mean
+// duplicating that per-archetype logic a second time just for the guest's position, so this is
+// a deliberately generic proxy instead: any archetype, mid-'attack', close enough, once per swing.
+// It won't match each boss's exact hitbox, but it means a guest isn't simply immune to boss melee.
+function coopGuestBossCombat(b){
+  if(b.dead){ _guestBossHitBy.delete(b.id); return; }
+  const active=b.state==='attack';
+  if(active && !_guestBossHitBy.has(b.id)){
+    const rw=b.w+30, rd=b.d+16;
+    if(Math.abs(P.x-(b.x+b.face*rw*0.5))<rw && Math.abs(P.z-b.z)<rd){ _guestBossHitBy.add(b.id); hurtPlayer(b.dmg||10,b.x); }
+  }
+  if(!active) _guestBossHitBy.delete(b.id);
+}
 function coopGuestCombat(){                       // guest: take damage from any mirrored enemy attacking me
   for(const e of ents){ if(e.dead){ continue; }
+    if(e.k==='boss'){ coopGuestBossCombat(e); continue; }
     const active = e.state==='atk' && (e.k==='rat'?(e.big?(e.st>14&&e.st<26):(e.st>10&&e.st<18)):(e.st>16&&e.st<30));
     if(active && !_guestHitBy.has(e.id)){
       const rw=e.k==='rat'?(e.big?34:18):34;
@@ -1334,7 +1367,7 @@ function genBoss(bn,forceArch){
   const sd=bn*97.31+3.7, H=k=>hsh(sd+k*1.7);
   const arch=forceArch||pickBossArch(bn,H);   // spider first, then weighted-random (train/deli/cart rare)
   const mul={ratking:1,bouncer:1.15,crawler:0.85,deli:1.2,subway:1.1,halal:0.95,auteur:1.0,tourist:1.05,lawyer:1.1}[arch];
-  const b={ k:'boss', big:true, arch, name:BOSS_NAME[arch], pal:BOSS_PAL[arch], moves:BOSS_MOVES[arch],
+  const b={ id:entId(), k:'boss', big:true, arch, name:BOSS_NAME[arch], pal:BOSS_PAL[arch], moves:BOSS_MOVES[arch],
     x:0,z:0,y:0,vy:0,vx:0,face:-1, state:'intro',st:0,anim:0,hitstun:0,dead:0,flash:0,tok:false,
     weakOpen:0,dmgTaken:0,rise:1,cd:50,move:null,windLen:24,atkLen:28,hitDone:false,repelCd:0,enraged:false,enrageRoll:false,enrageT:0,
     hp:0,maxhp:0, sc: arch==='crawler'?2.6:(arch==='deli'?3.0:(arch==='subway'||arch==='halal'?2.9:(arch==='auteur'||arch==='tourist'||arch==='lawyer'?2.9:3.1))),
@@ -1353,7 +1386,10 @@ function genBoss(bn,forceArch){
 }
 
 function spawnBoss(bn,forceArch){
-  if(MP) return;             // no bosses in co-op — covers gates, the 250m timer, the date "her man", and the dev gauntlet
+  // host-only, like every other co-op set piece. The automatic triggers (the 250m timer, the
+  // date "her man") stay explicitly off in co-op at their own call sites — only the dev menu's
+  // BOSS GAUNTLET / SPAWN BOSS buttons reach here in co-op, and only for whoever's hosting.
+  if(coopGuest()) return;
   const b=genBoss(bn,forceArch);
   b.x=clamp(camLock+W*0.72, camLock+60, camLock+W-60); b.z=FLOOR_N+34; b.face=-1;
   for(const e of ents) if(!e.dead){ e.dead=1; e.vx=(e.x<b.x?-1:1)*3; }   // the street clears — scatter any stragglers
@@ -1377,6 +1413,7 @@ function spawnBoss(bn,forceArch){
 // dev gauntlet: fight one of each archetype back to back, right where you stand
 let gauntlet=0, gauntletIx=0;
 function forceBoss(){
+  if(coopGuest()) return;    // dev buttons are host-only in co-op — a guest's press would just wipe its own mirrored view
   if(camLock!==null || boss) return;
   gauntletIx++;
   camLock=Math.max(0,P.x-170);
@@ -1384,6 +1421,7 @@ function forceBoss(){
 }
 // dev: jump straight to a specific archetype, clearing whatever's up
 function devBoss(arch){
+  if(coopGuest()) return;    // host-only, same reason as forceBoss
   for(const e of ents) e.dead=Math.max(e.dead,1);   // clear the street + any current boss
   camLock=null; boss=null; gauntlet=0; gauntletIx=0;
   camLock=Math.max(0,P.x-170);
@@ -1776,7 +1814,7 @@ function connect(e,s){
     return crit;
   }
   e.hp-=dmg;
-  if(coopGuest() && e.id!=null && e.k!=='boss') coopReportHit(e.id, dmg, P.face, !!s.launch);   // guest: host owns the real enemy, tell it
+  if(coopGuest() && e.id!=null) coopReportHit(e.id, dmg, P.face, !!s.launch);   // guest: host owns the real enemy (bosses included), tell it
   if(e.k==='boss'){                                // bosses don't stun/launch/smash — they chip and stagger
     e.flash=8; hitstop=crit?7:4; shake=Math.max(shake,crit?5:2.4);
     rumble(crit?150:80,.5,.6,true);
@@ -2002,7 +2040,7 @@ function resolveDate(n,score){
   night.women++;
   if(score>=0.8 && app>=9.5){                            // nailed a real 10/10 — the big payoff (a 3-way roll)
     const r=Math.random();
-    if(r<0.3 && camLock===null && !boss){               // her man shows up
+    if(r<0.3 && camLock===null && !boss && !MP){        // her man shows up (co-op skips this one — no automatic bosses)
       say(n.x,n.z-32,'...HER MAN','#ff2e88'); say(P.x,P.z-30,'INCOMING','#ff5a2e');
       camLock=Math.max(0,P.x-170); spawnBoss(Math.max(1,Math.floor(P.x/4000)+1));
     } else if(r<0.55){                                   // she's a keeper — an extra life
