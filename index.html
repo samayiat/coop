@@ -1065,6 +1065,7 @@ function genBoss(bn,forceArch){
 }
 
 function spawnBoss(bn,forceArch){
+  if(MP) return;             // no bosses in co-op — covers gates, the 250m timer, the date "her man", and the dev gauntlet
   const b=genBoss(bn,forceArch);
   b.x=clamp(camLock+W*0.72, camLock+60, camLock+W-60); b.z=FLOOR_N+34; b.face=-1;
   for(const e of ents) if(!e.dead){ e.dead=1; e.vx=(e.x<b.x?-1:1)*3; }   // the street clears — scatter any stragglers

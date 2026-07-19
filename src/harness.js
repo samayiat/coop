@@ -649,9 +649,11 @@ if(!err){
     global.Playroom={ myPlayer:()=>({ id:'me', setState:()=>{}, getState:()=>null }) };
     __others().length=0; __setMP(true); g.clearEnts();
     __key('KeyD',true); for(let i=0;i<4000;i++){ __tick(1); } __key('KeyD',false);
-    const spawned=g.ents.length;
+    g.spawnBoss(3);                       // the date "her man" + dev gauntlet path must also no-op in MP
+    const spawned=g.ents.length, gotBoss=!!g.boss;
     __setMP(false); delete global.Playroom; g.clearEnts();
     if(spawned) throw new Error(spawned+' entities spawned in co-op (expected 0)');
+    if(gotBoss) throw new Error('a boss spawned in co-op');
   });
   const g2=__G();
   console.log('\nend state: x='+Math.round(g2.P.x)+'  block '+(g2.tier()+1)+
