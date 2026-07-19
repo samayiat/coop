@@ -58,7 +58,8 @@ canvas{display:block;image-rendering:pixelated;image-rendering:crisp-edges;touch
 #pauseBtn{position:absolute;left:50%;top:2.5%;opacity:0;pointer-events:none;transition:opacity .2s;transform:translateX(-50%);width:34px;height:22px;border-radius:4px;
   border:1px solid #2f2b3d;background:rgba(15,13,22,.6);display:flex;align-items:center;justify-content:center;
   color:var(--dim);font-size:11px;pointer-events:auto;letter-spacing:.1em}
-/* title mode gate — pick SOLO or CO-OP before any game (and its network handshake) starts */
+/* title gate — this fork is co-op only; the button still exists so the network handshake
+   (insertCoin) runs before any game boots, same reasoning as when SOLO shared the menu */
 #startMenu{position:absolute;left:0;right:0;top:53%;display:none;flex-direction:column;
   align-items:center;gap:1.8vmin;z-index:15;pointer-events:none}
 #startMenu.on{display:flex}
@@ -267,10 +268,9 @@ kbd{background:#191725;border:1px solid #2f2b3d;border-bottom-width:2px;border-r
       </div>
       <div id="startMenu">
         <div id="startRow">
-          <button class="startBtn" id="btnSolo">SOLO</button>
           <button class="startBtn coop" id="btnCoop">CO-OP</button>
         </div>
-        <div id="startHint">TAP · ANY KEY / A = SOLO&nbsp;&nbsp;·&nbsp;&nbsp;C / Y = CO-OP</div>
+        <div id="startHint">TAP · ANY KEY / BUTTON TO START</div>
       </div>
     </div>
   </div>
@@ -535,7 +535,6 @@ function anotherRound(){ $('recap').classList.remove('on'); reset(); setPause(fa
 $('recapAgain').onclick=anotherRound;
 $('resume').onclick=()=>setPause(false);
 $('pauseBtn').onclick=()=>setPause(!paused);
-$('btnSolo').onclick=()=>chooseMode(false);
 $('btnCoop').onclick=()=>chooseMode(true);
 $('d_sober').onclick=()=>P.drunk=0;
 $('d_drunk').onclick=()=>P.drunk=Math.min(100,P.drunk+40);
@@ -558,9 +557,8 @@ $('shopList').addEventListener('click',e=>{ const it=e.target.closest('.item'); 
 const key={}, pressed={};
 addEventListener('keydown',e=>{
   if(mode==='title'){
-    if(e.code==='KeyC'){ chooseMode(true); e.preventDefault(); return; }   // C = co-op
     if(e.code==='Escape') return;
-    chooseMode(false); e.preventDefault(); return;                         // any other key = solo
+    chooseMode(true); e.preventDefault(); return;                          // this fork is co-op only — any key starts it
   }
   if(e.code==='Escape'||e.code==='KeyP'){setPause(!paused);return;}
   if(!key[e.code])pressed[e.code]=true; key[e.code]=true;
@@ -4125,8 +4123,8 @@ function titleCard(g){
   g.font='7px "JetBrains Mono",monospace'; g.fillStyle='#7a7391';
   spaced(g,'and the less you land',W/2,138,1);
 
-  // the SOLO / CO-OP buttons (DOM #startMenu) are the start affordance now — the mode
-  // choice has to land before any game boots, so the title no longer self-starts on input.
+  // the CO-OP button (DOM #startMenu) is the start affordance — the network handshake has
+  // to land before any game boots, so the title no longer self-starts on input.
   if(bestScore>0){ g.fillStyle='#ffb545'; g.font='7px "JetBrains Mono",monospace';
     spaced(g,'BEST NIGHT  '+bestScore,W/2,150,1.4); }
   g.restore();
@@ -4151,11 +4149,12 @@ function titleRender(){
   titleCard(dctx);      // ...the sign doesn't.
 }
 
-// The title is a mode gate: the FIRST thing that happens is a solo-vs-co-op choice.
-// Nothing calls startGame()/reset() until a mode is picked, so co-op's network handshake
-// (insertCoin) either runs to completion BEFORE the game boots, or not at all — a game is
-// never started and then has a mode grafted onto it. `starting` latches on the first pick
-// so a double-tap can't fire insertCoin twice while it's still awaiting.
+// This fork is co-op only. Nothing calls startGame()/reset() until the handshake is picked,
+// so co-op's network handshake (insertCoin) either runs to completion BEFORE the game boots,
+// or not at all — a game is never started and then has co-op grafted onto it. `starting`
+// latches on the first pick so a double-tap/keypress can't fire insertCoin twice while it's
+// still awaiting. startSolo() stays as the fallback path for when PlayroomKit can't connect
+// (offline, CDN unreachable) — not a menu option, just so the game is still playable then.
 let starting=false;
 function chooseMode(coop){
   if(mode!=='title'||starting) return;
@@ -4208,8 +4207,7 @@ function loop(now){ requestAnimationFrame(loop);
   if(mode==='title'){
     while(acc>=1/60){ titleTick(); acc-=1/60; }
     const gp = PAD.idx!==null ? navigator.getGamepads()[PAD.idx] : null;
-    if(gp){ if(gp.buttons[3]&&gp.buttons[3].pressed) chooseMode(true);       // Y = co-op
-            else if(gp.buttons.some(b=>b&&b.pressed)) chooseMode(false); }   // any other = solo
+    if(gp && gp.buttons.some(b=>b&&b.pressed)) chooseMode(true);             // co-op only — any button starts it
     titleRender(); return;
   }
   if(dawnShown||continueOn||builtOn||noticeOn||paused||shopOpen){ acc=0; render(); return; }
