@@ -1017,7 +1017,17 @@ function coopApply(){                                 // pull shared can/drop de
 // Bosses stay off in co-op for now. All wrapped so a hiccup can't throw into update().
 let _entSeq=0;
 function entId(){ return 'e'+(_entSeq++); }
-function coopHost(){ return !MP || typeof Playroom==="undefined" || !Playroom.isHost || Playroom.isHost(); }
+// The host is the player with the lowest id (== "1P" in the id-sorted colouring) — a
+// DETERMINISTIC election every client computes identically, so there is always exactly one
+// host. Playroom.isHost() proved unreliable under matchmaking (read true on both clients),
+// which made both simulate + spawn while one also mirrored — the "two sets of enemies" bug.
+function coopHost(){
+  if(!MP || typeof Playroom==="undefined") return true;
+  try{ const me=Playroom.myPlayer(); if(!me) return true;
+    let min=me.id; for(const o of others){ if(o && o.id<min) min=o.id; }
+    return me.id===min;
+  }catch(e){ return true; }
+}
 function coopGuest(){ return MP && !coopHost(); }
 function coopMyId(){ try{ return (Playroom.myPlayer()&&Playroom.myPlayer().id)||''; }catch(e){ return ''; } }
 
@@ -3941,7 +3951,7 @@ async function startCoop(){
   try {
     await Playroom.insertCoin({ matchmaking:true, maxPlayersPerRoom:4 });   // the handshake, before any game exists
     WSEED = seedFromRoom();          // P1's room decides the world — same code on every client
-    try{ if(Playroom.isHost && Playroom.isHost()){ for(const k of ['cansDead','dropsGone','ents','hits','revive']) Playroom.setState(k,{},true); } }catch(e){}   // host wipes any stale world/enemy deltas
+    try{ if(coopHost()){ for(const k of ['cansDead','dropsGone','ents','hits','revive']) Playroom.setState(k,{},true); } }catch(e){}   // host wipes any stale world/enemy deltas
     Playroom.onPlayerJoin((state) => {
       if(state.id===Playroom.myPlayer().id) return;                         // skip self
       others.push(state);

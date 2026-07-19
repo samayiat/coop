@@ -647,12 +647,13 @@ if(!err){
     // stays empty, and that bosses never spawn in co-op.
     const g=__G();
     global.Playroom={ myPlayer:()=>({ id:'me', setState:()=>{}, getState:()=>null }),
-      getState:()=>null, setState:()=>{}, isHost:()=>false };   // this client is the GUEST
-    __others().length=0; __setMP(true); g.clearEnts();
+      getState:()=>null, setState:()=>{} };
+    __others().length=0; __others().push({id:'aaa', getState:()=>null, onQuit:()=>{}});   // a lower id → 'me' is the GUEST (host = lowest id)
+    __setMP(true); g.clearEnts();
     __key('KeyD',true); for(let i=0;i<2000;i++){ __tick(1); } __key('KeyD',false);
     g.spawnBoss(3);                       // bosses stay off in co-op regardless of host/guest
     const spawned=g.ents.length, gotBoss=!!g.boss;
-    __setMP(false); delete global.Playroom; g.clearEnts();
+    __setMP(false); delete global.Playroom; g.clearEnts(); __others().length=0;
     if(spawned) throw new Error(spawned+' local enemies on the guest (should mirror host)');
     if(gotBoss) throw new Error('a boss spawned in co-op');
   });
