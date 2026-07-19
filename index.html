@@ -58,10 +58,19 @@ canvas{display:block;image-rendering:pixelated;image-rendering:crisp-edges;touch
 #pauseBtn{position:absolute;left:50%;top:2.5%;opacity:0;pointer-events:none;transition:opacity .2s;transform:translateX(-50%);width:34px;height:22px;border-radius:4px;
   border:1px solid #2f2b3d;background:rgba(15,13,22,.6);display:flex;align-items:center;justify-content:center;
   color:var(--dim);font-size:11px;pointer-events:auto;letter-spacing:.1em}
-#devHotspot{position:absolute;right:0;bottom:0;width:80px;height:80px;opacity:0;cursor:pointer}
-#devToggle{position:fixed;bottom:12px;right:12px;background:rgba(60,14,34,.9);border:1px solid var(--club);color:var(--sodium);padding:8px 12px;border-radius:4px;font-size:11px;display:none;z-index:100;cursor:pointer;font-family:'JetBrains Mono',monospace}
-#devToggle:hover,#devToggle:active{background:rgba(255,46,136,.5)}
-#devTrigger{position:fixed;bottom:8px;right:8px;width:40px;height:40px;background:rgba(255,46,136,.15);border:1px solid rgba(255,46,136,.3);border-radius:4px;z-index:99;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:10px;color:var(--dim)}
+/* title mode gate — pick SOLO or CO-OP before any game (and its network handshake) starts */
+#startMenu{position:absolute;left:0;right:0;top:53%;display:none;flex-direction:column;
+  align-items:center;gap:1.8vmin;z-index:15;pointer-events:none}
+#startMenu.on{display:flex}
+#startRow{display:flex;gap:3.2vmin}
+.startBtn{pointer-events:auto;font-family:'Bebas Neue',sans-serif;letter-spacing:.2em;
+  font-size:clamp(18px,4.6vmin,36px);color:var(--bone);background:rgba(15,13,22,.55);
+  border:1px solid #2f2b3d;border-radius:6px;padding:.28em 1.1em;cursor:pointer;
+  -webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px);line-height:1;transition:.12s}
+.startBtn:hover,.startBtn:active{color:#fff3d6;border-color:var(--sodium);background:rgba(255,181,69,.16)}
+.startBtn.coop{color:var(--sodium)}
+.startBtn.coop:hover,.startBtn.coop:active{color:#ffd6e8;border-color:var(--club);background:rgba(255,46,136,.18)}
+#startHint{font-family:'JetBrains Mono',monospace;font-size:8px;letter-spacing:.14em;color:#5c5670}
 
 
 /* ---- pause ---- */
@@ -255,10 +264,14 @@ kbd{background:#191725;border:1px solid #2f2b3d;border-bottom-width:2px;border-r
           <button class="mini" id="recapAgain">ANOTHER ROUND</button>
         </div>
       </div>
+      <div id="startMenu">
+        <div id="startRow">
+          <button class="startBtn" id="btnSolo">SOLO</button>
+          <button class="startBtn coop" id="btnCoop">CO-OP</button>
+        </div>
+        <div id="startHint">TAP · ANY KEY / A = SOLO&nbsp;&nbsp;·&nbsp;&nbsp;C / Y = CO-OP</div>
+      </div>
     </div>
-    <div id="devHotspot"></div>
-    <div id="devTrigger">D</div>
-    <button id="devToggle">CO-OP</button>
   </div>
 </div>
 <script>
@@ -303,10 +316,8 @@ async function goLandscape(){
   layout();
 }
 addEventListener('pointerdown',function once(){ goLandscape(); removeEventListener('pointerdown',once); },{once:true});
-// tap anywhere on the title starts solo — but NOT a tap on the co-op controls.
-// pointerdown fires before click, so without this guard a tap on CO-OP boots the
-// solo game first and startCoop() then grafts multiplayer onto a running solo game.
-addEventListener('pointerdown',(e)=>{ if(mode==='title' && !(e.target&&e.target.closest&&e.target.closest('#devToggle,#devTrigger'))) startSolo(); });
+// no tap-anywhere start: on the title you pick SOLO or CO-OP from #startMenu, so the
+// solo-vs-co-op (network-handshake-or-not) decision is always made before any game boots.
 
 //====================== atlas ======================
 const sheet=new Image(); const flip=document.createElement('canvas');
@@ -314,7 +325,7 @@ sheet.onload=()=>{ flip.width=sheet.width; flip.height=sheet.height;
   const fc=flip.getContext('2d'); fc.imageSmoothingEnabled=false;
   for(const k in IDX){ const [x,y]=IDX[k]; fc.save();
     fc.translate(x+S,y); fc.scale(-1,1); fc.drawImage(sheet,x,y,S,S,0,0,S,S); fc.restore(); }
-  buildManifest(); reset(); mode='title'; titleT=0;
+  buildManifest(); reset(); mode='title'; titleT=0; $('startMenu').classList.add('on');
   // canvas needs the display face actually loaded before it'll use it
   try{ if(document.fonts&&document.fonts.load){ document.fonts.load('400 62px "Bebas Neue"');
     document.fonts.load('400 26px "Bebas Neue"'); } }catch(e){}
@@ -523,9 +534,8 @@ function anotherRound(){ $('recap').classList.remove('on'); reset(); setPause(fa
 $('recapAgain').onclick=anotherRound;
 $('resume').onclick=()=>setPause(false);
 $('pauseBtn').onclick=()=>setPause(!paused);
-$('devHotspot').onclick=()=>{ if(mode==='title') startSolo(); };
-$('devTrigger').onclick=()=>{ const dt=$('devToggle'); dt.style.display=dt.style.display==='none'?'block':'none'; };
-$('devToggle').onclick=()=>{ startCoop(); };
+$('btnSolo').onclick=()=>chooseMode(false);
+$('btnCoop').onclick=()=>chooseMode(true);
 $('d_sober').onclick=()=>P.drunk=0;
 $('d_drunk').onclick=()=>P.drunk=Math.min(100,P.drunk+40);
 $('d_cash').onclick=()=>P.money+=100;
@@ -546,8 +556,9 @@ $('shopList').addEventListener('click',e=>{ const it=e.target.closest('.item'); 
 const key={}, pressed={};
 addEventListener('keydown',e=>{
   if(mode==='title'){
-    if(e.code==='KeyD'){ $('devToggle').style.display=$('devToggle').style.display==='none'?'block':'none'; return; }
-    startSolo(); e.preventDefault(); return;
+    if(e.code==='KeyC'){ chooseMode(true); e.preventDefault(); return; }   // C = co-op
+    if(e.code==='Escape') return;
+    chooseMode(false); e.preventDefault(); return;                         // any other key = solo
   }
   if(e.code==='Escape'||e.code==='KeyP'){setPause(!paused);return;}
   if(!key[e.code])pressed[e.code]=true; key[e.code]=true;
@@ -3708,21 +3719,10 @@ function titleCard(g){
   g.font='7px "JetBrains Mono",monospace'; g.fillStyle='#7a7391';
   spaced(g,'and the less you land',W/2,138,1);
 
-  // PRESS START throbs on the same 128bpm the clubs do
-  const pulse=0.34+0.66*th;
-  g.globalAlpha=pulse;
-  g.font='400 26px '+BEBAS; g.fillStyle='#ff2e88';
-  spaced(g,'PRESS START',W/2,198,5);
-  g.globalAlpha=pulse*0.35; g.fillStyle='#ff2e88';
-  g.fillRect(W/2-62,203,124,1);
-  g.globalAlpha=1;
-
-  g.font='7px "JetBrains Mono",monospace'; g.fillStyle='#5c5670';
-  const hint = PAD.idx!==null ? 'A  ·  START' : (OPT.touch ? 'TAP ANYWHERE' : 'ANY KEY  ·  TAP  ·  GAMEPAD');
-  spaced(g,hint,W/2,212,1.4);
-
+  // the SOLO / CO-OP buttons (DOM #startMenu) are the start affordance now — the mode
+  // choice has to land before any game boots, so the title no longer self-starts on input.
   if(bestScore>0){ g.fillStyle='#ffb545'; g.font='7px "JetBrains Mono",monospace';
-    spaced(g,'BEST NIGHT  '+bestScore,W/2,224,1.4); }
+    spaced(g,'BEST NIGHT  '+bestScore,W/2,150,1.4); }
   g.restore();
 }
 
@@ -3745,44 +3745,45 @@ function titleRender(){
   titleCard(dctx);      // ...the sign doesn't.
 }
 
-async function startCoop(){
-  if(mode!=='title'||started) return;   // solo already booted this tap — never graft MP onto a running game
-  console.log("startCoop called, Playroom defined?", typeof Playroom !== "undefined");
-  if(typeof Playroom === "undefined") { console.error("Playroom undefined, falling back to solo"); return startSolo(); }
-  MP = true;
-  try {
-    console.log("Calling insertCoin with matchmaking...");
-    console.log("Playroom object:", typeof Playroom);
-    await Playroom.insertCoin({
-      matchmaking: true,
-      maxPlayersPerRoom: 4
-      // Note: gameId may be optional or loaded from env
-    });
-    console.log("✓ insertCoin succeeded, setting up event handlers");
-    Playroom.onPlayerJoin((state) => {
-      console.log("✓ Player joined:", state.id);
-      if(state.id === Playroom.myPlayer().id) return;  // skip self
-      others.push(state);
-      state.onQuit(() => others.splice(others.indexOf(state), 1));
-    });
-    console.log("✓ Event handlers ready, starting game");
-    startGame();
-  } catch(e) {
-    console.error("✗ PlayroomKit error:", e.message || e);
-    console.error("Error details:", e);
-    startSolo();
-  }
+// The title is a mode gate: the FIRST thing that happens is a solo-vs-co-op choice.
+// Nothing calls startGame()/reset() until a mode is picked, so co-op's network handshake
+// (insertCoin) either runs to completion BEFORE the game boots, or not at all — a game is
+// never started and then has a mode grafted onto it. `starting` latches on the first pick
+// so a double-tap can't fire insertCoin twice while it's still awaiting.
+let starting=false;
+function chooseMode(coop){
+  if(mode!=='title'||starting) return;
+  starting=true;
+  $('startMenu').classList.remove('on');
+  (coop?startCoop:startSolo)();
 }
 
 function startSolo(){
-  MP = false;
-  others.length = 0;
+  MP=false; others.length=0;
   startGame();
+}
+
+async function startCoop(){
+  if(typeof Playroom==="undefined"){ console.warn("PlayroomKit unavailable — starting solo"); return startSolo(); }
+  MP=true;
+  try {
+    await Playroom.insertCoin({ matchmaking:true, maxPlayersPerRoom:4 });   // the handshake, before any game exists
+    Playroom.onPlayerJoin((state) => {
+      if(state.id===Playroom.myPlayer().id) return;                         // skip self
+      others.push(state);
+      state.onQuit(() => others.splice(others.indexOf(state), 1));
+    });
+    startGame();
+  } catch(e) {
+    console.error("PlayroomKit error — falling back to solo:", e.message||e);
+    MP=false; others.length=0; startGame();
+  }
 }
 
 function startGame(){
   if(mode!=='title'||started) return;
   started=true; mode='play';
+  $('startMenu').classList.remove('on');
   try{ AC=AC||new (window.AudioContext||window.webkitAudioContext)(); AC.resume&&AC.resume(); }catch(e){}
   reset();
   blip(560,.06); rumble(260,.6,.7,true);
@@ -3798,7 +3799,8 @@ function loop(now){ requestAnimationFrame(loop);
   if(mode==='title'){
     while(acc>=1/60){ titleTick(); acc-=1/60; }
     const gp = PAD.idx!==null ? navigator.getGamepads()[PAD.idx] : null;
-    if(gp && gp.buttons.some(b=>b&&b.pressed)) startGame();
+    if(gp){ if(gp.buttons[3]&&gp.buttons[3].pressed) chooseMode(true);       // Y = co-op
+            else if(gp.buttons.some(b=>b&&b.pressed)) chooseMode(false); }   // any other = solo
     titleRender(); return;
   }
   if(dawnShown||continueOn||builtOn||noticeOn||paused||shopOpen){ acc=0; render(); return; }
