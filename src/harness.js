@@ -759,6 +759,22 @@ if(!err){
 
     __setMP(false); delete global.Playroom; g.releaseArena();
   });
+  scene('co-op waves scale per player: 4P spawns double a 2P wave', ()=>{
+    global.Playroom={ myPlayer:()=>({id:'me',setState:()=>{},getState:()=>null}), getState:()=>null, setState:()=>{} };
+    const g=__G();
+    const fake=id=>({id, getState:()=>null, setState:()=>{}, onQuit:()=>{}});
+    __setMP(true);
+    __others().length=0; __others().push(fake('b'));                 // 2P room
+    g.releaseArena(); g.clearEnts(); g.spawnWave(1);
+    const two=g.ents.length;
+    __others().push(fake('c'), fake('d'));                           // 4P room
+    g.clearEnts(); g.spawnWave(1);
+    const four=g.ents.length;
+    __setMP(false); __others().length=0; delete global.Playroom; g.releaseArena();
+    if(!(two>0)) throw new Error('2P wave spawned nothing');
+    if(four!==two*2) throw new Error('4P wave is not double the 2P wave: '+two+' vs '+four);
+    console.log('        wave size 2P='+two+'  4P='+four);
+  });
   scene('co-op: the 250m threshold spawns a boss for the host', ()=>{
     // The auto-trigger was hard-gated !MP ('no bosses in co-op'). Now the HOST's position
     // drives it, same as gate waves — the guest only tracks bossDone passively.
