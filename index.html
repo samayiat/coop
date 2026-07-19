@@ -1211,7 +1211,7 @@ function say(x,z,txt,col){ floats.push({x,z,y:78,txt,col:col||'#fff',life:60}); 
 // dueling at once: a punch thrown by/at someone outside the live duel is just ignored.
 const DUEL_HP=100, DUEL_DMG=15, DUEL_LIVES=3, DUEL_TIMEOUT=300;   // ~5s of no reply lapses a challenge
 const DUEL_X0=40, DUEL_X1=260, DUEL_Z=300;      // the little room — same layout every time, no real street coords
-let dueling=false, duelPhase='none', duelT=0, duelSave=null, duelSeenHp=DUEL_HP;
+let dueling=false, duelPhase='none', duelRole='fighter', duelT=0, duelSave=null, duelSeenHp=DUEL_HP;
 function pvpState(){ try{ return Playroom.getState('pvp'); }catch(e){ return null; } }
 function pvpSet(d){ try{ Playroom.setState('pvp', d, true); }catch(e){} }
 function pvpPunch(targetId){
@@ -1247,10 +1247,16 @@ function pvpPunch(targetId){
 function pvpTick(){
   const d=pvpState(); const my=coopMyId();
   if(d && d.phase==='challenge' && (d.a===my||d.b===my) && t-d.lastT>DUEL_TIMEOUT) pvpSet(Object.assign({},d,{phase:'off'}));
-  if(d && (d.a===my||d.b===my) && d.phase==='active' && !dueling) duelEnter(d);
-  if(dueling && duelPhase==='active' && d && d.phase==='end'){ duelPhase='result'; duelT=0; }
+  if(d && (d.a===my||d.b===my) && d.phase==='active' && !dueling) duelEnter('fighter');
+  // a bystander (not a or b) can drop in and watch — TALK while a duel is live, TALK again to leave early
+  if(d && d.phase==='active' && d.a!==my && d.b!==my && !dueling && !P.downed && !boss && !busMob && camLock===null && (tap('KeyE')||tapT('D'))) duelEnter('spectator');
+  if(dueling && duelRole==='spectator' && duelPhase==='active' && (tap('KeyE')||tapT('D'))){ duelPhase='transit-back'; duelT=0; }
+  if(dueling && duelPhase==='active'){
+    if(!d || d.phase==='challenge' || d.phase==='off'){ duelPhase='transit-back'; duelT=0; }   // the fight we were in got replaced/cleared out from under us
+    else if(d.phase==='end'){ duelPhase='result'; duelT=0; }
+  }
   if(dueling && duelPhase==='result'){ duelT++; if(duelT>90){ duelPhase='transit-back'; duelT=0; } }
-  if(dueling && duelPhase==='active' && d){                    // feel it when the shared hp drops under me
+  if(dueling && duelRole==='fighter' && duelPhase==='active' && d){          // feel it when the shared hp drops under me
     const amA=d.a===my, myHp=amA?d.hpA:d.hpB;
     if(myHp<duelSeenHp){ shake=Math.max(shake,4); hitstop=Math.max(hitstop,4); P.hitFlash=16;
       rumble(200,.8,.5,true); blip(90,.08); }
@@ -1264,11 +1270,15 @@ function duelTransitTick(){
     P.x-=5; P.face=-1;
     if(duelT>=26){
       camFlash=1; blip(120,.05);
-      const d=pvpState(), my=coopMyId(), amA=d&&d.a===my;
-      P.x = amA?DUEL_X0+50:DUEL_X1-50; P.z=DUEL_Z; P.y=0; P.vy=0;
-      P.face = amA?1:-1; P.state='idle'; P.st=0; P.step=0; P.buf=0; P.hitDone=false;
+      if(duelRole==='fighter'){
+        const d=pvpState(), my=coopMyId(), amA=d&&d.a===my;
+        P.x = amA?DUEL_X0+50:DUEL_X1-50; P.z=DUEL_Z; P.face=amA?1:-1;
+        duelSeenHp = d ? (amA?d.hpA:d.hpB) : DUEL_HP;
+      } else {                                     // spectator — parked off to the side, out of the way
+        P.x = clamp(DUEL_X0+30+Math.floor(rnd(0,DUEL_X1-DUEL_X0-60)), DUEL_X0, DUEL_X1); P.z=FLOOR_N+16; P.face=1;
+      }
+      P.y=0; P.vy=0; P.state='idle'; P.st=0; P.step=0; P.buf=0; P.hitDone=false;
       camX=DUEL_X0-40;
-      duelSeenHp = d ? (amA?d.hpA:d.hpB) : DUEL_HP;
       duelPhase='active'; duelT=0;
     }
   } else if(duelPhase==='transit-back'){
@@ -1276,13 +1286,13 @@ function duelTransitTick(){
     if(duelT>=26) duelExitFinish();
   }
 }
-function duelEnter(d){
-  dueling=true; duelPhase='transit-out'; duelT=0;
+function duelEnter(role){
+  dueling=true; duelPhase='transit-out'; duelRole=role; duelT=0;
   duelSave={x:P.x,z:P.z,y:P.y,camX,camLock,
     ents,crowd,cans,npcs,drops,props,cars,fires,litter,steam};
   ents=[]; crowd=[]; cans=[]; npcs=[]; drops=[]; props=[]; cars=[]; fires=[]; litter=[]; steam=[];
   camLock=null; P.state='walk'; P.y=0; P.vy=0;
-  say(P.x,P.z-40,'HEADING INSIDE...','#ffb545');
+  say(P.x,P.z-40, role==='spectator'?'GOING TO WATCH...':'HEADING INSIDE...', '#ffb545');
 }
 function duelExitFinish(){
   const s=duelSave, d=pvpState(), my=coopMyId();
@@ -1290,8 +1300,10 @@ function duelExitFinish(){
   cars=s.cars; fires=s.fires; litter=s.litter; steam=s.steam;
   P.x=s.x; P.z=s.z; P.y=s.y; P.vy=0; camX=s.camX; camLock=s.camLock;
   P.state='idle'; P.st=0; P.step=0; P.buf=0; P.hitDone=false;
-  dueling=false; duelPhase='none'; duelSave=null;
-  if(d && d.winner) say(P.x,P.z-40, d.winner===my?'YOU WON THE DUEL':'RUN IT BACK SOMETIME','#c9d13a');
+  const wasSpectator=duelRole==='spectator';
+  dueling=false; duelPhase='none'; duelRole='fighter'; duelSave=null;
+  if(d && d.winner) say(P.x,P.z-40,
+    wasSpectator ? 'GOOD FIGHT' : (d.winner===my?'YOU WON THE DUEL':'RUN IT BACK SOMETIME'), '#c9d13a');
   camFlash=1; blip(120,.05);
 }
 
@@ -3903,6 +3915,10 @@ function hud(){
       ctx.fillText(pd.a===myId ? 'DUEL SENT — HIT BACK 3x TO ACCEPT ('+pd.hitsA+'/3)'
                                 : 'DUEL?! HIT BACK 3x TO ACCEPT ('+pd.hitsB+'/3)', W/2, 40);
     }
+    if(pd && pd.phase==='active' && pd.a!==myId && pd.b!==myId && t%40<28){   // a bystander — offer to watch
+      ctx.textAlign='center'; ctx.font='bold 10px "JetBrains Mono",monospace'; ctx.fillStyle='#3ad1ff';
+      ctx.fillText('DUEL IN PROGRESS — TALK TO SPECTATE', W/2, 40);
+    }
     ctx.restore(); ctx.textAlign='left'; }
 
   ctx.font='7px "JetBrains Mono",monospace';
@@ -4157,9 +4173,12 @@ function renderDuel(){
       me.setState("pos", {x:P.x, y:P.y, z:P.z, state:P.state, face:P.face, down:!!P.downed, hp:P.hp});
       const order=[me.id, ...others.map(o=>o.id)].filter((v,i,a)=>a.indexOf(v)===i).sort();
       myCoopIdx=order.indexOf(me.id);
-      const d=pvpState(), my=coopMyId(), oppId = d ? (d.a===my?d.b:d.a) : null;
-      const o = oppId && others.find(x=>x.id===oppId);
-      if(o){ const pos=o.getState("pos"); if(pos) list.push({z:pos.z, f:()=>drawRemotePlayer(o, pos, order.indexOf(o.id))}); }
+      // draw anyone ELSE whose broadcast pos has them in this same little room — the opponent
+      // (for a fighter) and any spectators alike, no separate "who's here" list to maintain
+      for(const o of others){
+        const pos=o.getState("pos"); if(!pos || pos.x<DUEL_X0-20 || pos.x>DUEL_X1+20) continue;
+        list.push({z:pos.z, f:()=>drawRemotePlayer(o, pos, order.indexOf(o.id))});
+      }
     }catch(e){}
   }
   list.sort((a,b)=>a.z-b.z);
@@ -4203,13 +4222,22 @@ function drawDuelBar(x,y,hp,lives,col,label){
 }
 function drawDuelHud(){
   const d=pvpState(); if(!d) return;
-  const my=coopMyId(), amA=d.a===my;
-  drawDuelBar(20, 14, amA?d.hpA:d.hpB, amA?d.livesA:d.livesB, '#3ad1ff', 'YOU');
-  drawDuelBar(W-170, 14, amA?d.hpB:d.hpA, amA?d.livesB:d.livesA, '#ff2e88', 'THEM');
+  const my=coopMyId(), amFighter = d.a===my||d.b===my, amA=d.a===my;
+  if(amFighter){
+    drawDuelBar(20, 14, amA?d.hpA:d.hpB, amA?d.livesA:d.livesB, '#3ad1ff', 'YOU');
+    drawDuelBar(W-170, 14, amA?d.hpB:d.hpA, amA?d.livesB:d.livesA, '#ff2e88', 'THEM');
+  } else {                                    // spectating — show both sides plainly, nobody's "you"
+    drawDuelBar(20, 14, d.hpA, d.livesA, '#3ad1ff', '1P');
+    drawDuelBar(W-170, 14, d.hpB, d.livesB, '#ff2e88', '2P');
+    ctx.textAlign='center'; ctx.font='bold 8px "JetBrains Mono",monospace'; ctx.fillStyle='#5c5670';
+    if(t%40<28) ctx.fillText('SPECTATING — TALK TO LEAVE', W/2, H-8);
+    ctx.textAlign='left';
+  }
   if(d.phase==='end'){
     ctx.textAlign='center'; ctx.font='bold 16px "Bebas Neue",sans-serif';
-    ctx.fillStyle = d.winner===my ? '#c9d13a' : '#ff2e88';
-    ctx.fillText(d.winner===my?'YOU WIN THE DUEL':'YOU LOSE THE DUEL', W/2, H*0.4);
+    ctx.fillStyle = amFighter ? (d.winner===my?'#c9d13a':'#ff2e88') : '#ffb545';
+    ctx.fillText(amFighter ? (d.winner===my?'YOU WIN THE DUEL':'YOU LOSE THE DUEL')
+                            : (d.winner===d.a?'1P WINS':'2P WINS'), W/2, H*0.4);
     ctx.textAlign='left';
   }
 }

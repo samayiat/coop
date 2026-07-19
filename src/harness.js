@@ -98,7 +98,7 @@ const driver = `
    genBoss,spawnBoss,updateBoss,killBoss,enrageBoss,hits,atkBox,startDate,resolveDate,
    buyContinue,callItNight,clutchRevive,continueCost,confFloor,
    spawnBusMob,updateBusMob, coopApplyHits,coopReportHit,coopGuestBossCombat,
-   pvpPunch,pvpTick,duelExitFinish, get pvpDueling(){return dueling}, get pvpPhase(){return duelPhase}});
+   pvpPunch,pvpTick,duelExitFinish, get pvpDueling(){return dueling}, get pvpPhase(){return duelPhase}, get pvpRole(){return duelRole}});
 ;globalThis.__key=(k,v)=>{ if(v&&!key[k]) pressed[k]=true; key[k]=v; };
 ;globalThis.__tick=(n)=>{ for(let i=0;i<n;i++){ update(); } };
 ;globalThis.__draw=()=>render();
@@ -780,6 +780,13 @@ if(!err){
     d=room.pvp;
     if(d.phase!=='active') throw new Error('3 hits back did not accept the duel: '+JSON.stringify(d));
     if(d.hpA!==100||d.hpB!==100||d.livesA!==3||d.livesB!==3) throw new Error('duel did not reset hp/lives on accept: '+JSON.stringify(d));
+
+    // a bystander (neither a nor b) can drop in and watch — TALK while the duel is live
+    meId='c';
+    __key('KeyE',true); g.pvpTick(); __key('KeyE',false);
+    if(!g.pvpDueling || g.pvpRole!=='spectator') throw new Error('bystander did not enter spectate mode: dueling='+g.pvpDueling+' role='+g.pvpRole);
+    if(g.pvpPhase!=='transit-out') throw new Error("expected phase 'transit-out' for the spectator, got "+g.pvpPhase);
+    g.duelExitFinish();   // leave spectating and restore this perspective's local state before testing the fighters below
 
     // pvpTick() should pull a participant into the arena the moment the shared state says 'active'
     meId='a'; g.pvpTick();
