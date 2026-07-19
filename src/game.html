@@ -743,7 +743,9 @@ function stream(){
     }
   }
   // nothing chases you forever — but the boss is never culled (it owns the locked arena)
+  const before=ents.length;
   ents=ents.filter(e=>e.k==='boss' || (e.x>camX-460 && e.x<camX+W+460));
+  if(OPT.dev && before!==ents.length) console.log('[STREAM] culled from', before, 'to', ents.length, 'at camX='+Math.round(camX));
 }
 let camX=0, camLock=null, t=0, shake=0, hitstop=0, camFlash=0;   // camFlash: the tourist's photo whiteout
 let boss=null, bossDone=0;                 // the current boss entity, and the highest 250m threshold started
@@ -1052,11 +1054,24 @@ function coopHostPlayer(){                        // the lowest-id player's Play
     return host;
   }catch(e){ return null; }
 }
-function coopBroadcastEnts(){ try{ const o={}; for(const e of ents){ const s={}; for(const f of ENT_FIELDS) s[f]=e[f]; o[e.id]=s; } Playroom.myPlayer().setState('ents', o); }catch(e){} }
+function coopBroadcastEnts(){
+  try{
+    const o={};
+    for(const e of ents){ const s={}; for(const f of ENT_FIELDS) s[f]=e[f]; o[e.id]=s; }
+    Playroom.myPlayer().setState('ents', o);
+    if(OPT.dev) console.log('[BROADCAST] host sending', Object.keys(o).length, 'enemies:', Object.keys(o).slice(0,3));
+  }catch(e){ if(OPT.dev) console.error('[BROADCAST] error:', e.message); }
+}
 function coopMirrorEnts(){                        // guest: replace local enemies with the host's snapshot
-  try{ const hp=coopHostPlayer(); const snap=hp && hp.getState('ents'); ents.length=0;
+  try{
+    const hp=coopHostPlayer();
+    const snap=hp && hp.getState('ents');
+    const before=ents.length;
+    ents.length=0;
     if(snap) for(const k in snap){ const s=snap[k]; if(s) ents.push(Object.assign({vx:0,vy:0,cd:0,enterZ:s.z,recoil:0,recoilT:0}, s)); }
-  }catch(e){ ents.length=0; }
+    if(OPT.dev && (ents.length>0||before>0)) console.log('[MIRROR] guest got', ents.length, 'enemies (was', before, ')');
+    if(!snap && OPT.dev) console.log('[MIRROR] no snapshot from host:', hp?'host exists':'no host');
+  }catch(e){ ents.length=0; if(OPT.dev) console.error('[MIRROR] error:', e.message); }
 }
 let _hitSeq=0; const _hitsApplied=new Set();
 function coopReportHit(id,dmg,kx,launch){        // guest -> host: "I hit enemy `id` for `dmg`"
@@ -2413,7 +2428,7 @@ function update(){
   }
   fires=fires.filter(f=>!f.gone);
 
-  stream();
+  if(!coopGuest()) stream();   // host culls; guest trusts the host's broadcasts (which were already streamed)
   best=Math.max(best,P.x); night.reach=Math.max(night.reach,P.x);
   if(!dawnShown && night.reach>=DAWN_X && camLock===null) showRecap('dawn');   // made it to last call
   ambient();
