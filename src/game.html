@@ -1018,17 +1018,25 @@ function coopApply(){                                 // pull shared can/drop de
 let _entSeq=0;
 function entId(){ return 'e'+(_entSeq++); }
 // The host is the player with the lowest id (== "1P" in the id-sorted colouring) — a
-// DETERMINISTIC election every client computes identically, so there is always exactly one
-// host. Playroom.isHost() proved unreliable under matchmaking (read true on both clients),
-// which made both simulate + spawn while one also mirrored — the "two sets of enemies" bug.
-function coopHost(){
-  if(!MP || typeof Playroom==="undefined") return true;
-  try{ const me=Playroom.myPlayer(); if(!me) return true;
-    let min=me.id; for(const o of others){ if(o && o.id<min) min=o.id; }
-    return me.id===min;
-  }catch(e){ return true; }
+// DETERMINISTIC election every client computes identically, so there is exactly one host,
+// and ONLY the host spawns enemies (Playroom.isHost() read true on both clients under
+// matchmaking, so both spawned). Cached once per frame from the full participant roster.
+// Critically, on any uncertainty (no player yet / a transient error) we default to GUEST
+// so a client never spuriously spawns a second set of enemies.
+let _amHost = true;   // solo default
+function coopUpdateHost(){
+  if(!MP || typeof Playroom==="undefined"){ _amHost=true; return; }
+  try{
+    const me=Playroom.myPlayer(); if(!me){ _amHost=false; return; }   // don't know yet → guest, don't spawn
+    let min=me.id;
+    const parts = Playroom.getParticipants ? Playroom.getParticipants() : null;
+    if(parts){ for(const k in parts){ const p=parts[k]; const pid=(p&&p.id)||k; if(pid<min) min=pid; } }
+    else for(const o of others){ if(o && o.id<min) min=o.id; }
+    _amHost = (me.id===min);
+  }catch(e){ _amHost=false; }   // error → assume guest; never flip to host and spawn
 }
-function coopGuest(){ return MP && !coopHost(); }
+function coopHost(){ return !MP || _amHost; }
+function coopGuest(){ return MP && !_amHost; }
 function coopMyId(){ try{ return (Playroom.myPlayer()&&Playroom.myPlayer().id)||''; }catch(e){ return ''; } }
 
 const ENT_FIELDS=['id','k','x','z','y','face','state','st','anim','dead','hp','maxhp','w','d','h',
@@ -1988,6 +1996,7 @@ function ambient(){
 //====================== update ======================
 function update(){
   t++;
+  if(MP) coopUpdateHost();     // settle host/guest once per frame (lowest id = host = the only spawner)
   if(MP) coopApply();          // pull shared can/drop deltas from teammates before simulating
   if(P.downed){ coopDownedUpdate(); return; }                                   // on the pavement — frozen until revived
   if(MP && P.money>=500 && coopDownedTeammate() && (tap('KeyE')||tapT('D'))) coopReviveTeammate();   // TALK by a downed teammate → pay $500
@@ -3951,6 +3960,7 @@ async function startCoop(){
   try {
     await Playroom.insertCoin({ matchmaking:true, maxPlayersPerRoom:4 });   // the handshake, before any game exists
     WSEED = seedFromRoom();          // P1's room decides the world — same code on every client
+    coopUpdateHost();
     try{ if(coopHost()){ for(const k of ['cansDead','dropsGone','ents','hits','revive']) Playroom.setState(k,{},true); } }catch(e){}   // host wipes any stale world/enemy deltas
     Playroom.onPlayerJoin((state) => {
       if(state.id===Playroom.myPlayer().id) return;                         // skip self
