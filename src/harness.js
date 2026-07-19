@@ -90,7 +90,7 @@ const driver = `
    spawn:(e)=>ents.push(e), clearEnts:()=>{ ents.length=0; },
    setCamLock:(v)=>{ camLock=v; camX=v; }, setBest:(v)=>{ best=v; }, setLives:(v)=>{ lives=v; },
    releaseArena:()=>{ ents.length=0; camLock=null; boss=null; bossDone=0; hitstop=0; dateOn=false; date=null; fires.length=0; },
-   rat,vamp,connect,hurtPlayer,setShop,buy,spawnWave,tier,stream,update,render,talkLen,resolveTalk,aggro,
+   rat,vamp,connect,hurtPlayer,setShop,buy,spawnWave,tier,stream,update,render,talkLen,resolveTalk,aggro,mkNpc,
    tryGrab,grabbable,atCurb,splatInTraffic,dropGrab,launchGrabbed,tossPlayerToStreet,
    throwWeapon,drop, get WEAPONS(){return WEAPONS},
    genBoss,spawnBoss,updateBoss,killBoss,enrageBoss,hits,atkBox,startDate,resolveDate,
@@ -654,6 +654,17 @@ if(!err){
     __setMP(false); delete global.Playroom; g.clearEnts();
     if(spawned) throw new Error(spawned+' entities spawned in co-op (expected 0)');
     if(gotBoss) throw new Error('a boss spawned in co-op');
+  });
+  scene('co-op: women are deterministic (same door → same woman + crew)', ()=>{
+    // mkNpc must be a pure function of position so every client in a room generates the
+    // identical woman/crew at each door. Was Math.random() — the reason women desynced.
+    const g=__G();
+    const a=g.mkNpc(1234,306), b=g.mkNpc(1234,306);
+    if(a.who!==b.who) throw new Error('mkNpc.who not deterministic: '+a.who+' vs '+b.who);
+    if(a.crew.length!==b.crew.length) throw new Error('mkNpc.crew size not deterministic');
+    if(a.scammer!==b.scammer || a.trueTier!==b.trueTier) throw new Error('mkNpc tier/scammer not deterministic');
+    const seen=new Set(); for(let x=200;x<6000;x+=520) seen.add(g.mkNpc(x,306).who);
+    if(seen.size<2) throw new Error('mkNpc gives the same woman at every door — not seeded by position');
   });
   const g2=__G();
   console.log('\nend state: x='+Math.round(g2.P.x)+'  block '+(g2.tier()+1)+

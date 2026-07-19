@@ -675,7 +675,7 @@ const tier = ()=> Math.floor(P.x/1500);
 function genChunk(ci){
   if(MADE.has(ci)) return; MADE.add(ci);
   const x0=ci*CHUNK; let k=0;
-  const R=()=>hsh(ci*131.7+(k++)*7.13+0.5);
+  const R=()=>hsh(ci*131.7+(k++)*7.13+0.5+WSEED);
   let x=x0;
   while(x<x0+CHUNK){
     const w=145+Math.floor(R()*95), club=R()<0.48;   // a few more storefronts so shops/liquor have homes
@@ -693,7 +693,7 @@ function genChunk(ci){
   }
   // one burger joint on roughly every other chunk — the only place money means anything.
   // if the chunk rolled a burger it GETS one: prefer a shop, but a club will do. the roll wins.
-  if(hsh(ci*7.77+2.3)<0.48){
+  if(hsh(ci*7.77+2.3+WSEED)<0.48){
     const mine=BUILDINGS.filter(b=>b.chunk===ci);
     if(mine.length){
       const shops=mine.filter(b=>b.kind==='shop');
@@ -705,7 +705,7 @@ function genChunk(ci){
     }
   }
   // most blocks get a liquor store — prefer a spare storefront, but a club will do so it always appears
-  if(hsh(ci*5.31+9.2)<0.7){
+  if(hsh(ci*5.31+9.2+WSEED)<0.7){
     const mine=BUILDINGS.filter(b=>b.chunk===ci && b.kind!=='burger');
     const shops=mine.filter(b=>b.kind==='shop');
     const pool=shops.length?shops:mine;
@@ -781,16 +781,20 @@ let best=0;
 
 const NUM_WOMEN=13;   // w0-w12: 4 original (dancing) + 4 new (talk/laugh) + 5 wired from earlier gens
 function mkNpc(x,z){
-  const who=Math.floor(Math.random()*NUM_WOMEN);
+  // deterministic per (x,z): who she is, her crew and her tells are seeded off her
+  // (already deterministic) position, so every client in the room generates the SAME
+  // woman at the SAME door. Was Math.random(), which is why women desynced across co-op.
+  let s=0; const R=()=>hsh(x*0.371 + z*0.113 + (s++)*3.17 + 7.7);
+  const who=Math.floor(R()*NUM_WOMEN);
   // her crew — 0-2 companions standing beside her, chatting and laughing. purely
   // decorative (the tell/scam mechanic stays on the main woman), but it turns a
   // lone figure at the door into a group you have to read.
-  const crew=[]; const nc=Math.random()<0.62?(Math.random()<0.5?1:2):0;
+  const crew=[]; const nc=R()<0.62?(R()<0.5?1:2):0;
   const used=new Set([who]); const moods=['talk','laugh','talk'];
-  for(let i=0;i<nc;i++){ let w2,guard=0; do{ w2=Math.floor(Math.random()*NUM_WOMEN);}while(used.has(w2)&&guard++<12); used.add(w2);
-    crew.push({dx:(i===0?-1:1)*(22+Math.random()*12), who:w2, mood:moods[Math.floor(Math.random()*3)], ph:Math.random()*9}); }
-  return {x,z,trueTier:Math.floor(rnd(3,11)),scammer:Math.random()<0.45, who, crew,
-    talked:false,blown:false,tellPh:rnd(0,6),lie:0,lieT:0,revealed:false,listening:false,laugh:0}; }
+  for(let i=0;i<nc;i++){ let w2,guard=0; do{ w2=Math.floor(R()*NUM_WOMEN);}while(used.has(w2)&&guard++<12); used.add(w2);
+    crew.push({dx:(i===0?-1:1)*(22+R()*12), who:w2, mood:moods[Math.floor(R()*3)], ph:R()*9}); }
+  return {x,z,trueTier:Math.floor(3+R()*8),scammer:R()<0.45, who, crew,
+    talked:false,blown:false,tellPh:R()*6,lie:0,lieT:0,revealed:false,listening:false,laugh:0}; }
 
 // pick the right frame for a crew woman's mood, falling back to her idle rotation
 // until the talk/laugh animations are packed into the atlas.
@@ -3686,6 +3690,16 @@ let mode='title', titleT=0, started=false;
 let MP = false;          // multiplayer session?
 const others = [];       // remote player states
 
+// world seed. Solo = 0 (the classic street). In co-op it's derived from the room code —
+// which every client in the room shares and the host (P1) created — so P1's room decides
+// the world and all clients generate the identical street (women/props/layout in lockstep).
+let WSEED = 0;
+function seedFromRoom(){
+  const rc = (typeof Playroom!=="undefined" && Playroom.getRoomCode && Playroom.getRoomCode()) || '';
+  let h=0; for(let i=0;i<rc.length;i++) h=(Math.imul(h,31)+rc.charCodeAt(i))|0;
+  return (Math.abs(h)%100000)/97;
+}
+
 function titleTick(){
   t++; titleT++;
   for(const b of BUILDINGS) if(b.open>0)b.open--;
@@ -3793,7 +3807,7 @@ function chooseMode(coop){
 }
 
 function startSolo(){
-  MP=false; others.length=0;
+  MP=false; others.length=0; WSEED=0;
   startGame();
 }
 
@@ -3802,6 +3816,7 @@ async function startCoop(){
   MP=true;
   try {
     await Playroom.insertCoin({ matchmaking:true, maxPlayersPerRoom:4 });   // the handshake, before any game exists
+    WSEED = seedFromRoom();          // P1's room decides the world — same code on every client
     Playroom.onPlayerJoin((state) => {
       if(state.id===Playroom.myPlayer().id) return;                         // skip self
       others.push(state);
@@ -3810,7 +3825,7 @@ async function startCoop(){
     startGame();
   } catch(e) {
     console.error("PlayroomKit error — falling back to solo:", e.message||e);
-    MP=false; others.length=0; startGame();
+    MP=false; others.length=0; WSEED=0; startGame();
   }
 }
 
